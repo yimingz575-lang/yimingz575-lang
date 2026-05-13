@@ -1,5 +1,22 @@
 # DEV_LOG.md
 
+## 2026-05-13 视觉显示层样式与工具栏调整
+
+本次只修改 Dash / Plotly 显示层，没有修改包含关系、分型、笔、线段、中枢、背驰、买卖点等缠论算法逻辑。
+
+修改文件：
+- `src/ui/app.py`
+- `src/ui/chart.py`
+- `tests/test_chart_bi_mapping.py`
+- `DEV_LOG.md`
+
+本次调整：
+- 工具栏删除“显示包含关系”和“显示分型”，新增“显示均线”；默认显示选项仍为 `["bi"]`，均线默认不显示。
+- K 线 Candlestick 的上涨、下跌实体、边框和影线统一为白色，不改变任何 OHLC 原始数据。
+- 均线仅在勾选“显示均线”后绘制，显示 MA5、MA10、MA20，均基于 `close.rolling(window).mean()` 计算，只用于图表展示。
+- 笔 trace 只改显示颜色：`direction == "up"` 显示红色，`direction == "down"` 显示绿色；缺少 `direction` 字段时按 `end_price` 与 `start_price` 回退判断。
+- 图表层仍只使用 `analyze_chan_marks()` 返回的最终 `confirmed_bis` 绘制笔，没有在绘图阶段补线、移动端点或重新计算分型/笔。
+
 ## 2026-05-12 笔层回溯深度改为可配置
 
 本次没有修改 UI、`src/ui/chart.py`、`src/ui/app.py`，没有修改分型定义，没有删除极值校验，也没有降低成笔条件。

@@ -11,7 +11,7 @@ DEFAULT_STOCK_CODE = "DEMO"
 DEFAULT_PERIOD = "daily"
 DEFAULT_VISIBLE_COUNT = 300
 DEFAULT_DISPLAY_OPTIONS = ["bi"]
-ANALYSIS_VERSION = "standard_bars_v3_chart_x_yaxis"
+ANALYSIS_VERSION = "standard_bars_v4_visual_options"
 DRAW_DATA_LIMIT = 1000
 DATA_CACHE: dict[str, dict] = {}
 LAST_X_RANGE_CACHE: dict[str, tuple[float, float]] = {}
@@ -28,8 +28,7 @@ PERIOD_OPTIONS = [
 PERIOD_LABELS = {option["value"]: option["label"] for option in PERIOD_OPTIONS}
 
 DISPLAY_OPTIONS = [
-    {"label": "显示包含关系", "value": "inclusion"},
-    {"label": "显示分型", "value": "fractal"},
+    {"label": "显示均线", "value": "ma"},
     {"label": "显示笔", "value": "bi"},
     {"label": "显示线段", "value": "segment"},
     {"label": "显示中枢", "value": "zone"},

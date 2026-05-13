@@ -14,10 +14,9 @@ from src.chan.inclusion import detect_inclusion_marks
 from src.indicators.macd import append_macd
 
 MA_CONFIG = {
-    "ma5": {"window": 5, "name": "MA5", "color": "#ffffff"},
-    "ma10": {"window": 10, "name": "MA10", "color": "#ffd400"},
+    "ma5": {"window": 5, "name": "MA5", "color": "#ffd400"},
+    "ma10": {"window": 10, "name": "MA10", "color": "#ff9f1c"},
     "ma20": {"window": 20, "name": "MA20", "color": "#d96cff"},
-    "ma60": {"window": 60, "name": "MA60", "color": "#33d17a"},
 }
 
 CHAN_PLACEHOLDER_TRACES = {
@@ -30,8 +29,11 @@ CHAN_PLACEHOLDER_TRACES = {
 
 BACKGROUND_COLOR = "#000000"
 GRID_COLOR = "rgba(255, 0, 0, 0.38)"
+KLINE_COLOR = "white"
 UP_COLOR = "#ff2b2b"
 DOWN_COLOR = "#00d6a3"
+BI_UP_COLOR = "#ff3030"
+BI_DOWN_COLOR = "#33d17a"
 CHART_DEBUG_DIR = Path("output")
 CHART_BI_MAPPING_DEBUG_PATH = CHART_DEBUG_DIR / "chart_bi_mapping_debug.csv"
 CHART_BI_COVERAGE_DEBUG_PATH = CHART_DEBUG_DIR / "chart_bi_coverage_debug.csv"
@@ -64,7 +66,6 @@ PREPARED_COLUMNS = [
     "ma5",
     "ma10",
     "ma20",
-    "ma60",
     "dif",
     "dea",
     "macd",
@@ -83,6 +84,8 @@ def create_kline_figure(
 ) -> go.Figure:
     """Create a Tongdaxin-style K-line figure with MA and MACD panels."""
     chart_df = _prepare_chart_data(df)
+    selected_options = set(display_options or [])
+    show_ma = "ma" in selected_options
 
     fig = make_subplots(
         rows=2,
@@ -93,7 +96,7 @@ def create_kline_figure(
         specs=[[{"type": "candlestick"}], [{"type": "bar"}]],
     )
 
-    if performance_mode:
+    if performance_mode or not show_ma:
         customdata = chart_df[["date_label", "volume", "dif", "dea", "macd"]]
         hovertemplate = (
             "日期/时间: %{customdata[0]}<br>"
@@ -108,9 +111,7 @@ def create_kline_figure(
             "<extra></extra>"
         )
     else:
-        customdata = chart_df[
-            ["date_label", "volume", "ma5", "ma10", "ma20", "ma60", "dif", "dea", "macd"]
-        ]
+        customdata = chart_df[["date_label", "volume", "ma5", "ma10", "ma20", "dif", "dea", "macd"]]
         hovertemplate = (
             "日期/时间: %{customdata[0]}<br>"
             "开盘价: %{open:.2f}<br>"
@@ -121,10 +122,9 @@ def create_kline_figure(
             "MA5: %{customdata[2]:.2f}<br>"
             "MA10: %{customdata[3]:.2f}<br>"
             "MA20: %{customdata[4]:.2f}<br>"
-            "MA60: %{customdata[5]:.2f}<br>"
-            "DIF: %{customdata[6]:.4f}<br>"
-            "DEA: %{customdata[7]:.4f}<br>"
-            "MACD: %{customdata[8]:.4f}"
+            "DIF: %{customdata[5]:.4f}<br>"
+            "DEA: %{customdata[6]:.4f}<br>"
+            "MACD: %{customdata[7]:.4f}"
             "<extra></extra>"
         )
 
@@ -136,10 +136,10 @@ def create_kline_figure(
             low=chart_df["low"],
             close=chart_df["close"],
             name="K线",
-            increasing_line_color=UP_COLOR,
-            increasing_fillcolor=UP_COLOR,
-            decreasing_line_color=DOWN_COLOR,
-            decreasing_fillcolor=DOWN_COLOR,
+            increasing_line_color=KLINE_COLOR,
+            increasing_fillcolor=KLINE_COLOR,
+            decreasing_line_color=KLINE_COLOR,
+            decreasing_fillcolor=KLINE_COLOR,
             customdata=customdata,
             hovertemplate=hovertemplate,
         ),
@@ -147,19 +147,20 @@ def create_kline_figure(
         col=1,
     )
 
-    for column, config in MA_CONFIG.items():
-        fig.add_trace(
-            go.Scatter(
-                x=chart_df["x"],
-                y=chart_df[column],
-                mode="lines",
-                name=config["name"],
-                line={"color": config["color"], "width": 1.2},
-                hoverinfo="skip",
-            ),
-            row=1,
-            col=1,
-    )
+    if show_ma:
+        for column, config in MA_CONFIG.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=chart_df["x"],
+                    y=chart_df[column],
+                    mode="lines",
+                    name=config["name"],
+                    line={"color": config["color"], "width": 1.2},
+                    hoverinfo="skip",
+                ),
+                row=1,
+                col=1,
+            )
 
     _add_inclusion_marker_trace(fig, chart_df, display_options)
     chan_trace_info = _add_chan_algorithm_traces(
@@ -235,7 +236,7 @@ def prepare_chart_data(df: pd.DataFrame) -> pd.DataFrame:
         chart_df[column] = pd.to_numeric(chart_df[column], errors="coerce")
 
     for column, config in MA_CONFIG.items():
-        chart_df[column] = chart_df["close"].rolling(window=config["window"], min_periods=1).mean()
+        chart_df[column] = chart_df["close"].rolling(config["window"]).mean()
 
     return append_macd(chart_df)
 
@@ -291,7 +292,7 @@ def _prepare_chart_data(df: pd.DataFrame) -> pd.DataFrame:
     missing_indicators = [column for column in PREPARED_COLUMNS[4:] if column not in chart_df.columns]
     if missing_indicators:
         for column, config in MA_CONFIG.items():
-            chart_df[column] = chart_df["close"].rolling(window=config["window"], min_periods=1).mean()
+            chart_df[column] = chart_df["close"].rolling(config["window"]).mean()
         chart_df = append_macd(chart_df)
     else:
         for column in PREPARED_COLUMNS[4:]:
@@ -519,7 +520,9 @@ def _add_bi_line_traces(fig: go.Figure, bis: pd.DataFrame) -> int:
 
     bi_trace_count = 0
     for position, (_, bi) in enumerate(bis.iterrows()):
-        direction_label = "上升笔" if bi["direction"] == "up" else "下降笔"
+        direction = _resolve_bi_direction(bi)
+        direction_label = _format_bi_direction_label(direction)
+        line_color = _get_bi_line_color(direction)
         start_date = _format_hover_date(bi["start_date"])
         end_date = _format_hover_date(bi["end_date"])
         customdata = [
@@ -547,8 +550,8 @@ def _add_bi_line_traces(fig: go.Figure, bis: pd.DataFrame) -> int:
                 mode="lines+markers",
                 name="笔",
                 showlegend=position == 0,
-                line={"color": "#00a8ff", "width": 2.2},
-                marker={"color": "#f8f32b", "size": 5},
+                line={"color": line_color, "width": 2.2},
+                marker={"color": line_color, "size": 5},
                 customdata=customdata,
                 hovertemplate=(
                     "笔方向: %{customdata[0]}<br>"
@@ -565,6 +568,39 @@ def _add_bi_line_traces(fig: go.Figure, bis: pd.DataFrame) -> int:
         )
         bi_trace_count += 1
     return bi_trace_count
+
+
+def _resolve_bi_direction(bi: pd.Series) -> str:
+    direction = _row_value(bi, "direction")
+    if isinstance(direction, str):
+        normalized = direction.strip().lower()
+        if normalized in {"up", "down"}:
+            return normalized
+
+    start_price = pd.to_numeric(_row_value(bi, "start_price"), errors="coerce")
+    end_price = pd.to_numeric(_row_value(bi, "end_price"), errors="coerce")
+    if not pd.isna(start_price) and not pd.isna(end_price):
+        if float(end_price) > float(start_price):
+            return "up"
+        if float(end_price) < float(start_price):
+            return "down"
+    return "unknown"
+
+
+def _get_bi_line_color(direction: str) -> str:
+    if direction == "up":
+        return BI_UP_COLOR
+    if direction == "down":
+        return BI_DOWN_COLOR
+    return "#f8f32b"
+
+
+def _format_bi_direction_label(direction: str) -> str:
+    if direction == "up":
+        return "上升笔"
+    if direction == "down":
+        return "下降笔"
+    return "方向未知"
 
 
 def _collect_bi_segments(bis: pd.DataFrame) -> list[tuple[float, float]]:

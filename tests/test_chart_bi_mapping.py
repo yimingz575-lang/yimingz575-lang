@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.ui import chart
-from src.ui.app import ANALYSIS_VERSION, _make_cache_key
+from src.ui.app import ANALYSIS_VERSION, DEFAULT_DISPLAY_OPTIONS, DISPLAY_OPTIONS, _make_cache_key
 
 
 def _make_raw_df(raw_start: int, rows: int) -> pd.DataFrame:
@@ -21,9 +21,14 @@ def _make_raw_df(raw_start: int, rows: int) -> pd.DataFrame:
     )
 
 
-def _bi_record(start_virtual: int, end_virtual: int) -> dict:
-    return {
-        "direction": "down",
+def _bi_record(
+    start_virtual: int,
+    end_virtual: int,
+    direction: str | None = "down",
+    start_price: float = 20.0,
+    end_price: float = 12.0,
+) -> dict:
+    record = {
         "start_type": "top",
         "end_type": "bottom",
         "start_virtual_index": start_virtual,
@@ -32,10 +37,13 @@ def _bi_record(start_virtual: int, end_virtual: int) -> dict:
         "end_center_index": end_virtual,
         "start_date": pd.Timestamp("2024-01-03"),
         "end_date": pd.Timestamp("2024-01-07"),
-        "start_price": 20.0,
-        "end_price": 12.0,
+        "start_price": start_price,
+        "end_price": end_price,
         "kline_count": 5,
     }
+    if direction is not None:
+        record["direction"] = direction
+    return record
 
 
 def _fake_marks(
@@ -69,7 +77,82 @@ def _bi_traces(fig):
     return [
         trace
         for trace in fig.data
-        if getattr(trace, "line", None) is not None and getattr(trace.line, "color", None) == "#00a8ff"
+        if getattr(trace, "mode", None) == "lines+markers"
+    ]
+
+
+def test_toolbar_removes_inclusion_and_fractal_options_and_adds_ma() -> None:
+    option_values = {option["value"] for option in DISPLAY_OPTIONS}
+
+    assert "inclusion" not in option_values
+    assert "fractal" not in option_values
+    assert "ma" in option_values
+    assert "ma" not in DEFAULT_DISPLAY_OPTIONS
+
+
+def test_candlestick_uses_white_for_all_ohlc_colors() -> None:
+    fig = chart.create_kline_figure(
+        _make_raw_df(raw_start=0, rows=10),
+        display_options=[],
+        visible_count=None,
+    )
+
+    candle = fig.data[0]
+    assert candle.increasing.line.color == "white"
+    assert candle.increasing.fillcolor == "white"
+    assert candle.decreasing.line.color == "white"
+    assert candle.decreasing.fillcolor == "white"
+
+
+def test_moving_averages_are_hidden_by_default_and_shown_by_option() -> None:
+    default_fig = chart.create_kline_figure(
+        _make_raw_df(raw_start=0, rows=30),
+        display_options=[],
+        visible_count=None,
+    )
+    default_trace_names = {trace.name for trace in default_fig.data}
+
+    ma_fig = chart.create_kline_figure(
+        _make_raw_df(raw_start=0, rows=30),
+        display_options=["ma"],
+        visible_count=None,
+    )
+    ma_traces = [trace for trace in ma_fig.data if trace.name in {"MA5", "MA10", "MA20", "MA60"}]
+
+    assert {"MA5", "MA10", "MA20"}.isdisjoint(default_trace_names)
+    assert [trace.name for trace in ma_traces] == ["MA5", "MA10", "MA20"]
+    assert "MA60" not in {trace.name for trace in ma_fig.data}
+    assert pd.isna(ma_traces[0].y[0])
+    assert ma_traces[0].y[4] == 12.5
+
+
+def test_bi_line_color_uses_direction_and_price_fallback(monkeypatch) -> None:
+    def fake_marks(_: pd.DataFrame) -> dict[str, object]:
+        marks = _fake_marks(
+            {20: 101, 30: 102, 40: 103, 50: 104, 60: 105, 70: 106},
+            [],
+        )
+        marks["confirmed_bis"] = pd.DataFrame(
+            [
+                _bi_record(20, 30, direction="up", start_price=10.0, end_price=15.0),
+                _bi_record(40, 50, direction="down", start_price=18.0, end_price=12.0),
+                _bi_record(60, 70, direction=None, start_price=8.0, end_price=16.0),
+            ]
+        )
+        return marks
+
+    monkeypatch.setattr(chart, "analyze_chan_marks", fake_marks)
+
+    fig = chart.create_kline_figure(
+        _make_raw_df(raw_start=100, rows=10),
+        display_options=["bi"],
+        visible_count=None,
+    )
+
+    assert [trace.line.color for trace in _bi_traces(fig)] == [
+        chart.BI_UP_COLOR,
+        chart.BI_DOWN_COLOR,
+        chart.BI_UP_COLOR,
     ]
 
 

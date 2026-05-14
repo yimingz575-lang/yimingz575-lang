@@ -26,6 +26,9 @@ DEFAULT_TAIL_RAW_END = 5064
 DEFAULT_MAX_BI_ROLLBACK = 15
 MAX_BI_ROLLBACK = DEFAULT_MAX_BI_ROLLBACK
 STUCK_CANDIDATE_THRESHOLD = 20
+FALLBACK_AFFECTED_BI_THRESHOLD = 3
+FALLBACK_BI_COLOR = "yellow"
+FALLBACK_BI_REASON = "affected_confirmed_bi_count >= 3"
 
 EFFECTIVE_FRACTAL_COLUMNS = [*FRACTAL_COLUMNS, "is_effective"]
 BI_COLUMNS = [
@@ -50,6 +53,12 @@ BI_COLUMNS = [
     "end_fractal",
     "kline_count",
     "is_valid",
+    "is_temporary",
+    "is_fallback_bi",
+    "fallback_reason",
+    "color",
+    "affected_confirmed_bi_count",
+    "fallback_level",
 ]
 TAIL_REGION_DEBUG_COLUMNS = [
     "candidate_order",
@@ -281,6 +290,10 @@ def debug_bi_generation(
         "rollback_success_count": int(confirmed_bis.attrs.get("rollback_success_count", 0)),
         "rollback_failed_count": int(confirmed_bis.attrs.get("rollback_failed_count", 0)),
         "accepted_rollback_count": confirmed_bis.attrs.get("accepted_rollback_count", None),
+        "fallback_trigger_count": int(confirmed_bis.attrs.get("fallback_trigger_count", 0)),
+        "fallback_bi_count": int(confirmed_bis.attrs.get("fallback_bi_count", 0)),
+        "affected_confirmed_bi_count": int(confirmed_bis.attrs.get("affected_confirmed_bi_count", 0)),
+        "fallback_reason": confirmed_bis.attrs.get("fallback_reason", None),
         "rollback_csv_path": str(rollback_path),
         **tail_region_stats,
     }
@@ -381,6 +394,10 @@ def validate_bi_sequence_continuity(bis: pd.DataFrame, debug: bool = False) -> b
     if bis.empty:
         return True
 
+    bis = _standard_bis_for_strict_validation(bis)
+    if bis.empty:
+        return True
+
     is_valid = True
     for position in range(len(bis) - 1):
         current = bis.iloc[position]
@@ -422,6 +439,12 @@ def validate_bi_sequence_continuity(bis: pd.DataFrame, debug: bool = False) -> b
             )
 
     return is_valid
+
+
+def _standard_bis_for_strict_validation(bis: pd.DataFrame) -> pd.DataFrame:
+    if "is_fallback_bi" not in bis.columns:
+        return bis.reset_index(drop=True)
+    return bis[bis["is_fallback_bi"] != True].reset_index(drop=True)
 
 
 def _confirm_fractals_and_bis(
@@ -715,23 +738,42 @@ def build_bis_incremental(
     if active_bi is not None:
         bi_pairs.append(active_bi)
 
+    fallback_metadata: list[dict[str, Any]] = []
+    pre_rollback_bi_pairs = [*bi_pairs]
     rollback_stats = _empty_rollback_stats()
     rollback_records: list[dict[str, Any]] = []
     if rollback_enabled:
-        bi_pairs, rollback_stats, rollback_records = try_rollback_and_rebuild_tail(
+        rollback_bi_pairs, rollback_stats, rollback_records = try_rollback_and_rebuild_tail(
             standard_bars=bars,
             candidate_fractals=candidates,
             confirmed_bis=bi_pairs,
             max_rollback=max_rollback,
             stuck_candidate_threshold=stuck_candidate_threshold,
         )
+        bi_pairs, fallback_metadata = apply_rollback_or_fallback_bi(
+            standard_bars=bars,
+            candidate_fractals=candidates,
+            original_bis=pre_rollback_bi_pairs,
+            rollback_bis=rollback_bi_pairs,
+            rollback_stats=rollback_stats,
+        )
 
-    effective_points = _make_effective_points_from_bi_pairs(bi_pairs)
-    bi_records = [_make_bi_record(start, end) for start, end in bi_pairs]
+    fallback_metadata_by_key = {
+        _bi_pair_key(metadata["pair"]): metadata for metadata in fallback_metadata
+    }
+    standard_bi_pairs = [
+        pair for pair in bi_pairs if _bi_pair_key(pair) not in fallback_metadata_by_key
+    ]
+    effective_points = _make_effective_points_from_bi_pairs(standard_bi_pairs)
+    bi_records = [
+        _make_bi_record(start, end, fallback_metadata=fallback_metadata_by_key.get(_bi_pair_key((start, end))))
+        for start, end in bi_pairs
+    ]
     effective_records = [_make_effective_fractal_record(fractal) for fractal in effective_points]
     effective_fractals = pd.DataFrame(effective_records, columns=EFFECTIVE_FRACTAL_COLUMNS)
     bis = pd.DataFrame(bi_records, columns=BI_COLUMNS)
-    rollback_accepted = rollback_stats["rollback_success_count"] > 0
+    fallback_applied = bool(fallback_metadata)
+    rollback_accepted = rollback_stats["rollback_success_count"] > 0 and not fallback_applied
     bis.attrs["locked_bis_count"] = max(len(bi_pairs) - 1, 0) if rollback_accepted else len(locked_bis)
     bis.attrs["pending_bi_count"] = 0 if rollback_accepted else 1 if pending_bi is not None else 0
     bis.attrs["active_bi_count"] = 1 if len(bi_pairs) else 0
@@ -747,6 +789,12 @@ def build_bis_incremental(
     bis.attrs["rollback_failed_count"] = rollback_stats["rollback_failed_count"]
     bis.attrs["accepted_rollback_count"] = rollback_stats["accepted_rollback_count"]
     bis.attrs["rollback_debug_records"] = rollback_records
+    bis.attrs["fallback_trigger_count"] = 1 if fallback_applied else 0
+    bis.attrs["fallback_bi_count"] = len(fallback_metadata)
+    bis.attrs["affected_confirmed_bi_count"] = (
+        int(fallback_metadata[0]["affected_confirmed_bi_count"]) if fallback_applied else 0
+    )
+    bis.attrs["fallback_reason"] = fallback_metadata[0]["fallback_reason"] if fallback_applied else None
     if debug:
         print(
             {
@@ -760,6 +808,7 @@ def build_bis_incremental(
                 "rollback_success_count": rollback_stats["rollback_success_count"],
                 "rollback_failed_count": rollback_stats["rollback_failed_count"],
                 "accepted_rollback_count": rollback_stats["accepted_rollback_count"],
+                "fallback_bi_count": len(fallback_metadata),
                 "sequence_continuity_ok": validate_bi_sequence_continuity(bis, debug=True),
             }
         )
@@ -793,7 +842,9 @@ def try_rollback_and_rebuild_tail(
     if not bi_pairs:
         return bi_pairs, stats, records
 
-    candidates = candidate_fractals.sort_values(["center_index", "index"]).reset_index(drop=True)
+    candidates = _normalize_fractals_for_bi(candidate_fractals).sort_values(
+        ["center_index", "index"]
+    ).reset_index(drop=True)
     trigger = _find_rollback_trigger(candidates, bi_pairs, stuck_candidate_index, stuck_candidate_threshold)
     if trigger is None:
         return bi_pairs, stats, records
@@ -876,6 +927,147 @@ def try_rollback_and_rebuild_tail(
 
     stats["rollback_failed_count"] = 1
     return bi_pairs, stats, records
+
+
+def count_affected_confirmed_bis(rollback_stats: dict[str, int | None] | int | None) -> int:
+    """Count confirmed historical bis a rollback would rewrite."""
+    if rollback_stats is None:
+        return 0
+    if isinstance(rollback_stats, int):
+        return max(rollback_stats, 0)
+    accepted_rollback_count = rollback_stats.get("accepted_rollback_count")
+    if accepted_rollback_count is None:
+        return 0
+    return max(int(accepted_rollback_count), 0)
+
+
+def should_use_fallback_bi(
+    affected_confirmed_bi_count: int,
+    threshold: int = FALLBACK_AFFECTED_BI_THRESHOLD,
+) -> bool:
+    return int(affected_confirmed_bi_count) >= int(threshold)
+
+
+def apply_rollback_or_fallback_bi(
+    standard_bars: Sequence[Any],
+    candidate_fractals: pd.DataFrame,
+    original_bis: Sequence[tuple[pd.Series, pd.Series]],
+    rollback_bis: Sequence[tuple[pd.Series, pd.Series]],
+    rollback_stats: dict[str, int | None],
+) -> tuple[list[tuple[pd.Series, pd.Series]], list[dict[str, Any]]]:
+    affected_count = count_affected_confirmed_bis(rollback_stats)
+    rollback_succeeded = int(rollback_stats.get("rollback_success_count") or 0) > 0
+    if not rollback_succeeded or not should_use_fallback_bi(affected_count):
+        return list(rollback_bis), []
+
+    fallback_bi = build_temporary_fallback_bi(
+        standard_bars=standard_bars,
+        candidate_fractals=candidate_fractals,
+        confirmed_bis=original_bis,
+        affected_confirmed_bi_count=affected_count,
+    )
+    if fallback_bi is None:
+        return list(original_bis), []
+    return append_fallback_bi_without_rewriting_history(original_bis, fallback_bi), [fallback_bi]
+
+
+def append_fallback_bi_without_rewriting_history(
+    confirmed_bis: Sequence[tuple[pd.Series, pd.Series]],
+    fallback_bi: dict[str, Any],
+) -> list[tuple[pd.Series, pd.Series]]:
+    return [*list(confirmed_bis), fallback_bi["pair"]]
+
+
+def build_temporary_fallback_bi(
+    standard_bars: Sequence[Any],
+    candidate_fractals: pd.DataFrame,
+    confirmed_bis: Sequence[tuple[pd.Series, pd.Series]],
+    affected_confirmed_bi_count: int,
+) -> dict[str, Any] | None:
+    """Build one non-standard fallback bi after locked history without rewriting it."""
+    _validate_standard_bars_for_bi(standard_bars)
+    if not confirmed_bis or candidate_fractals.empty:
+        return None
+
+    start = confirmed_bis[-1][1]
+    candidates = _normalize_fractals_for_bi(candidate_fractals).sort_values(
+        ["center_index", "index"]
+    ).reset_index(drop=True)
+    tail_candidates = _tail_candidates_after_fractal(candidates, start)
+    if tail_candidates.empty:
+        return None
+
+    fallback_end = _pick_fallback_level_one_endpoint(start, tail_candidates)
+    fallback_level = 1
+    if fallback_end is None:
+        fallback_end = _pick_fallback_level_two_endpoint(start, tail_candidates)
+        fallback_level = 2
+    if fallback_end is None:
+        fallback_end = _pick_fallback_level_three_endpoint(start, tail_candidates)
+        fallback_level = 3
+    if fallback_end is None:
+        return None
+
+    if _get_center_index(fallback_end) <= _get_center_index(start):
+        return None
+    if not _fallback_price_has_direction(start, fallback_end):
+        return None
+
+    return {
+        "pair": (start, fallback_end),
+        "is_temporary": True,
+        "is_fallback_bi": True,
+        "fallback_reason": FALLBACK_BI_REASON,
+        "color": FALLBACK_BI_COLOR,
+        "affected_confirmed_bi_count": int(affected_confirmed_bi_count),
+        "fallback_level": fallback_level,
+    }
+
+
+def _tail_candidates_after_fractal(candidates: pd.DataFrame, start: pd.Series) -> pd.DataFrame:
+    start_center_index = _get_center_index(start)
+    start_raw_index = _get_fractal_raw_end(start)
+    tail_candidates = candidates[
+        (candidates["center_index"].astype(int) > start_center_index)
+        & (candidates["source_end_index"].astype(int) > start_raw_index)
+    ]
+    return tail_candidates.reset_index(drop=True)
+
+
+def _pick_fallback_level_one_endpoint(start: pd.Series, tail_candidates: pd.DataFrame) -> pd.Series | None:
+    opposite = tail_candidates[tail_candidates["type"] != start["type"]]
+    return _pick_latest_directional_candidate(start, opposite)
+
+
+def _pick_fallback_level_two_endpoint(start: pd.Series, tail_candidates: pd.DataFrame) -> pd.Series | None:
+    return _pick_latest_directional_candidate(start, tail_candidates)
+
+
+def _pick_fallback_level_three_endpoint(start: pd.Series, tail_candidates: pd.DataFrame) -> pd.Series | None:
+    if tail_candidates.empty:
+        return None
+    latest = tail_candidates.sort_values(["source_end_index", "center_index"]).iloc[-1]
+    return latest if _fallback_price_has_direction(start, latest) else None
+
+
+def _pick_latest_directional_candidate(start: pd.Series, candidates: pd.DataFrame) -> pd.Series | None:
+    if candidates.empty:
+        return None
+    directional = [
+        candidate for _, candidate in candidates.iterrows() if _fallback_price_has_direction(start, candidate)
+    ]
+    if not directional:
+        return None
+    return sorted(
+        directional,
+        key=lambda candidate: (_get_fractal_raw_end(candidate), _get_center_index(candidate)),
+    )[-1]
+
+
+def _fallback_price_has_direction(start: Any, end: Any) -> bool:
+    start_price = float(_get_value(start, "price"))
+    end_price = float(_get_value(end, "price"))
+    return not _prices_equal(start_price, end_price)
 
 
 def _empty_rollback_stats() -> dict[str, int | None]:
@@ -1558,6 +1750,7 @@ def _count_attempt_reason(attempts_debug: pd.DataFrame, reason: str) -> int:
 
 
 def _all_bis_pass_extreme(bars: Sequence[Any], bis: pd.DataFrame) -> bool:
+    bis = _standard_bis_for_strict_validation(bis)
     for _, bi in bis.iterrows():
         start = _make_fractal_from_bi_endpoint(bi, "start", bars)
         end = _make_fractal_from_bi_endpoint(bi, "end", bars)
@@ -1599,6 +1792,10 @@ def _make_debug_report_lines(
         f"rollback_success_count={stats['rollback_success_count']}",
         f"rollback_failed_count={stats['rollback_failed_count']}",
         f"accepted_rollback_count={stats['accepted_rollback_count']}",
+        f"fallback_trigger_count={stats['fallback_trigger_count']}",
+        f"fallback_bi_count={stats['fallback_bi_count']}",
+        f"affected_confirmed_bi_count={stats['affected_confirmed_bi_count']}",
+        f"fallback_reason={stats['fallback_reason']}",
         f"suspected_missing_bis_count={stats['suspected_missing_bis_count']}",
         f"continuity_ok={stats['continuity_ok']}",
         f"all_extreme_ok={stats['all_extreme_ok']}",
@@ -1719,6 +1916,10 @@ def _fractal_key(fractal: Any) -> tuple:
     )
 
 
+def _bi_pair_key(pair: tuple[pd.Series, pd.Series]) -> tuple[tuple, tuple]:
+    return (_fractal_key(pair[0]), _fractal_key(pair[1]))
+
+
 def _calculate_kline_count(start_fractal: Any, end_fractal: Any) -> int:
     return _calculate_center_gap(start_fractal, end_fractal) + 1
 
@@ -1794,8 +1995,17 @@ def _format_fractal_for_debug(fractal: Any | None) -> dict | None:
     }
 
 
-def _make_bi_record(start: pd.Series, end: pd.Series) -> dict:
-    direction = _direction_from_types(start["type"], end["type"])
+def _make_bi_record(
+    start: pd.Series,
+    end: pd.Series,
+    fallback_metadata: dict[str, Any] | None = None,
+) -> dict:
+    is_fallback_bi = fallback_metadata is not None
+    direction = (
+        _fallback_direction_from_prices(start, end)
+        if is_fallback_bi
+        else _direction_from_types(start["type"], end["type"])
+    )
     return {
         "direction": direction,
         "start_type": start["type"],
@@ -1817,7 +2027,15 @@ def _make_bi_record(start: pd.Series, end: pd.Series) -> dict:
         "start_fractal": _fractal_key(start),
         "end_fractal": _fractal_key(end),
         "kline_count": _calculate_kline_count(start, end),
-        "is_valid": True,
+        "is_valid": not is_fallback_bi,
+        "is_temporary": bool(is_fallback_bi),
+        "is_fallback_bi": bool(is_fallback_bi),
+        "fallback_reason": fallback_metadata["fallback_reason"] if fallback_metadata else None,
+        "color": fallback_metadata["color"] if fallback_metadata else None,
+        "affected_confirmed_bi_count": fallback_metadata["affected_confirmed_bi_count"]
+        if fallback_metadata
+        else 0,
+        "fallback_level": fallback_metadata["fallback_level"] if fallback_metadata else None,
     }
 
 
@@ -1848,6 +2066,16 @@ def _direction_from_types(start_type: str, end_type: str) -> str:
     if start_type == TYPE_BOTTOM and end_type == TYPE_TOP:
         return DIRECTION_UP
     raise ValueError(f"不能用同类型分型生成笔：{start_type} -> {end_type}")
+
+
+def _fallback_direction_from_prices(start: Any, end: Any) -> str:
+    start_price = float(_get_value(start, "price"))
+    end_price = float(_get_value(end, "price"))
+    if end_price > start_price:
+        return DIRECTION_UP
+    if end_price < start_price:
+        return DIRECTION_DOWN
+    return _direction_from_types(_get_value(start, "type"), _get_value(end, "type"))
 
 
 def _source_indices_overlap(start_fractal: Any, end_fractal: Any) -> bool:

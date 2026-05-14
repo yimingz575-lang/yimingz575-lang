@@ -156,6 +156,38 @@ def test_bi_line_color_uses_direction_and_price_fallback(monkeypatch) -> None:
     ]
 
 
+def test_temporary_fallback_bi_is_drawn_yellow_with_hover_reason(monkeypatch) -> None:
+    def fake_marks(_: pd.DataFrame) -> dict[str, object]:
+        marks = _fake_marks({20: 101, 30: 102}, [])
+        fallback_bi = _bi_record(20, 30, direction="up", start_price=10.0, end_price=15.0)
+        fallback_bi.update(
+            {
+                "is_temporary": True,
+                "is_fallback_bi": True,
+                "fallback_reason": "affected_confirmed_bi_count >= 3",
+                "color": "yellow",
+                "affected_confirmed_bi_count": 3,
+                "fallback_level": 1,
+            }
+        )
+        marks["confirmed_bis"] = pd.DataFrame([fallback_bi])
+        return marks
+
+    monkeypatch.setattr(chart, "analyze_chan_marks", fake_marks)
+
+    fig = chart.create_kline_figure(
+        _make_raw_df(raw_start=100, rows=10),
+        display_options=["bi"],
+        visible_count=None,
+    )
+
+    trace = _bi_traces(fig)[0]
+    assert trace.line.color == "yellow"
+    assert trace.marker.color == "yellow"
+    assert trace.customdata[0][0] == "临时笔 / fallback bi"
+    assert trace.customdata[0][7] == "affected_confirmed_bi_count >= 3"
+
+
 def test_candles_and_bis_use_same_chart_x_range(monkeypatch) -> None:
     monkeypatch.setattr(
         chart,

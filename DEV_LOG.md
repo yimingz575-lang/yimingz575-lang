@@ -1,5 +1,34 @@
 # DEV_LOG.md
 
+## 2026-05-13 黄色临时笔 fallback 规则
+
+本次没有修改包含关系处理、分型识别、标准笔硬条件、标准笔极值校验、标准笔连续性规则，也没有修改 K 线、均线、工具栏等显示功能。
+
+修改文件：
+- `src/chan/bi.py`
+- `src/ui/chart.py`
+- `tests/test_bi_fallback.py`
+- `tests/test_chart_bi_mapping.py`
+- `DEV_LOG.md`
+
+本次新增：
+- 新增工程化兜底层：当现有标准尾部回溯方案已经找到可推进结果，但 `accepted_rollback_count >= 3`，即生成新笔需要改写 3 根及以上已确认历史笔时，不应用该破坏性回溯结果。
+- 新增 `count_affected_confirmed_bis()`、`should_use_fallback_bi()`、`build_temporary_fallback_bi()`、`append_fallback_bi_without_rewriting_history()`、`apply_rollback_or_fallback_bi()`。
+- 标准笔记录新增兼容字段：`is_temporary=False`、`is_fallback_bi=False`、`fallback_reason=None`、`color=None`、`affected_confirmed_bi_count=0`、`fallback_level=None`。
+- 黄色临时笔记录使用：`is_temporary=True`、`is_fallback_bi=True`、`color="yellow"`、`fallback_reason="affected_confirmed_bi_count >= 3"`。
+- 黄色临时笔只追加在当前标准历史笔之后，不删除、不替换、不重画、不移动既有标准笔端点；严格连续性和端点极值诊断仍只针对标准笔，临时笔不混入标准缠论规则判断。
+- 临时笔生成仍沿用本项目强制数据流中的 `standard_bars + candidate_fractals`，没有直接使用 raw_bars 识别分型或生成笔。
+- Plotly 画笔颜色改为：标准向上笔红色、标准向下笔绿色、临时 fallback 笔黄色；hover 中显示“临时笔 / fallback bi”和触发原因。
+
+新增测试：
+- `tests/test_bi_fallback.py`：覆盖 `affected_confirmed_bi_count < 3` 时仍使用标准回溯结果；`>= 3` 时保留历史标准笔并追加黄色临时笔；标准笔字段默认为非临时。
+- `tests/test_chart_bi_mapping.py`：覆盖临时 fallback 笔前端绘制为黄色并在 hover 数据中带触发原因。
+
+验证：
+- `.\.venv\Scripts\python.exe -m pytest tests\test_bi_fallback.py`：`3 passed`
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chart_bi_mapping.py`：`12 passed`
+- `.\.venv\Scripts\python.exe -m pytest`：`97 passed`
+
 ## 2026-05-13 视觉显示层样式与工具栏调整
 
 本次只修改 Dash / Plotly 显示层，没有修改包含关系、分型、笔、线段、中枢、背驰、买卖点等缠论算法逻辑。

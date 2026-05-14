@@ -522,25 +522,31 @@ def _add_bi_line_traces(fig: go.Figure, bis: pd.DataFrame) -> int:
     for position, (_, bi) in enumerate(bis.iterrows()):
         direction = _resolve_bi_direction(bi)
         direction_label = _format_bi_direction_label(direction)
-        line_color = _get_bi_line_color(direction)
+        line_color = _get_bi_line_color(direction, bi)
+        bi_kind_label = _format_bi_kind_label(bi)
+        fallback_reason = _format_bi_fallback_reason(bi)
         start_date = _format_hover_date(bi["start_date"])
         end_date = _format_hover_date(bi["end_date"])
         customdata = [
             [
+                bi_kind_label,
                 direction_label,
                 start_date,
                 end_date,
                 float(bi["start_price"]),
                 float(bi["end_price"]),
                 int(bi["kline_count"]),
+                fallback_reason,
             ],
             [
+                bi_kind_label,
                 direction_label,
                 start_date,
                 end_date,
                 float(bi["start_price"]),
                 float(bi["end_price"]),
                 int(bi["kline_count"]),
+                fallback_reason,
             ],
         ]
         fig.add_trace(
@@ -554,12 +560,14 @@ def _add_bi_line_traces(fig: go.Figure, bis: pd.DataFrame) -> int:
                 marker={"color": line_color, "size": 5},
                 customdata=customdata,
                 hovertemplate=(
-                    "笔方向: %{customdata[0]}<br>"
-                    "起点日期: %{customdata[1]}<br>"
-                    "终点日期: %{customdata[2]}<br>"
-                    "起点价格: %{customdata[3]:.2f}<br>"
-                    "终点价格: %{customdata[4]:.2f}<br>"
-                    "K线数量: %{customdata[5]}"
+                    "笔类型: %{customdata[0]}<br>"
+                    "笔方向: %{customdata[1]}<br>"
+                    "起点日期: %{customdata[2]}<br>"
+                    "终点日期: %{customdata[3]}<br>"
+                    "起点价格: %{customdata[4]:.2f}<br>"
+                    "终点价格: %{customdata[5]:.2f}<br>"
+                    "K线数量: %{customdata[6]}<br>"
+                    "触发原因: %{customdata[7]}"
                     "<extra></extra>"
                 ),
             ),
@@ -587,12 +595,33 @@ def _resolve_bi_direction(bi: pd.Series) -> str:
     return "unknown"
 
 
-def _get_bi_line_color(direction: str) -> str:
+def _get_bi_line_color(direction: str, bi: pd.Series | None = None) -> str:
+    if bi is not None and _is_fallback_bi_record(bi):
+        color = _row_value(bi, "color")
+        return str(color) if color else "yellow"
     if direction == "up":
         return BI_UP_COLOR
     if direction == "down":
         return BI_DOWN_COLOR
     return "#f8f32b"
+
+
+def _is_fallback_bi_record(bi: pd.Series) -> bool:
+    value = _row_value(bi, "is_fallback_bi", False)
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return bool(value)
+
+
+def _format_bi_kind_label(bi: pd.Series) -> str:
+    return "临时笔 / fallback bi" if _is_fallback_bi_record(bi) else "标准笔"
+
+
+def _format_bi_fallback_reason(bi: pd.Series) -> str:
+    if not _is_fallback_bi_record(bi):
+        return "-"
+    reason = _row_value(bi, "fallback_reason", "")
+    return str(reason) if reason else "-"
 
 
 def _format_bi_direction_label(direction: str) -> str:

@@ -146,6 +146,7 @@ def create_app(project_root: Path | None = None) -> Dash:
                 id="kline-chart",
                 className="kline-chart",
                 figure=initial_figure,
+                clear_on_unhover=True,
                 config={
                     "scrollZoom": True,
                     "displayModeBar": True,
@@ -238,6 +239,19 @@ def create_app(project_root: Path | None = None) -> Dash:
         figure_patch["layout"]["yaxis2"]["range"] = macd_range
         return figure_patch
 
+    @app.callback(
+        Output("kline-chart", "figure", allow_duplicate=True),
+        Input("kline-chart", "hoverData"),
+        prevent_initial_call=True,
+    )
+    def update_vertical_cursor_line(hover_data: dict | None):
+        figure_patch = Patch()
+        hover_x = _extract_hover_x_value(hover_data)
+        figure_patch["layout"]["shapes"] = (
+            [_make_vertical_cursor_line_shape(hover_x)] if hover_x is not None else []
+        )
+        return figure_patch
+
     return app
 
 
@@ -296,6 +310,32 @@ def _normalize_stock_code(stock_code: str | None) -> str:
 
 def _make_cache_key(stock_code: str | None, period: str | None) -> str:
     return f"{ANALYSIS_VERSION}_{_normalize_stock_code(stock_code)}_{period or DEFAULT_PERIOD}"
+
+
+def _extract_hover_x_value(hover_data: dict | None):
+    if not hover_data:
+        return None
+    points = hover_data.get("points")
+    if not points:
+        return None
+    return points[0].get("x")
+
+
+def _make_vertical_cursor_line_shape(x_value) -> dict:
+    return {
+        "type": "line",
+        "xref": "x",
+        "yref": "paper",
+        "x0": x_value,
+        "x1": x_value,
+        "y0": 0,
+        "y1": 1,
+        "line": {
+            "color": "rgba(255, 255, 255, 0.8)",
+            "width": 1,
+            "dash": "dot",
+        },
+    }
 
 
 def _extract_relayout_xaxis_range(relayout_data: dict | None) -> list[float] | None:

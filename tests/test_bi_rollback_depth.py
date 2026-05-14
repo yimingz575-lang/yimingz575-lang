@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.chan.bi import try_rollback_and_rebuild_tail, validate_bi_extreme
+from src.chan.bi import build_bis_incremental, try_rollback_and_rebuild_tail, validate_bi_extreme
 from src.chan.fractal import TYPE_BOTTOM, TYPE_TOP
 from src.chan.inclusion import StandardKLine
 
@@ -104,7 +104,7 @@ def _pair_indexes(pairs: list[tuple[pd.Series, pd.Series]]) -> list[tuple[int, i
     return [(int(start["center_index"]), int(end["center_index"])) for start, end in pairs]
 
 
-def test_rollback_depth_can_find_first_success_at_ten_without_global_rebuild() -> None:
+def test_rollback_depth_uses_yellow_fallback_instead_of_rewriting_ten_bis() -> None:
     bars, fractals, old_pairs = _build_depth_fixture()
 
     new_pairs, stats, records = try_rollback_and_rebuild_tail(
@@ -115,17 +115,33 @@ def test_rollback_depth_can_find_first_success_at_ten_without_global_rebuild() -
         stuck_candidate_threshold=2,
     )
 
-    assert stats["rollback_success_count"] == 1
-    assert stats["accepted_rollback_count"] == 10
+    assert stats["rollback_success_count"] == 0
+    assert stats["accepted_rollback_count"] is None
+    assert stats["fallback_bi_trigger_count"] == 1
+    assert stats["fallback_bi_count"] == 1
+    assert stats["fallback_affected_confirmed_bi_count"] == 10
     assert [record["rollback_count"] for record in records] == list(range(1, 11))
     assert all(record["accepted"] is False for record in records[:9])
-    assert records[9]["accepted"] is True
+    assert records[9]["accepted"] is False
+    assert records[9]["fallback_triggered"] is True
+    assert records[9]["affected_confirmed_bi_count"] == 10
+    assert records[9]["reason"] == "fallback_affected_confirmed_bi_count_gte_3"
     assert records[9]["kept_bis_count"] == 1
     assert records[9]["old_last_raw_index"] == 44
     assert records[9]["new_last_raw_index"] == 124
     assert _pair_indexes(new_pairs) == [
         (0, 4),
-        (4, 84),
+        (4, 8),
+        (8, 12),
+        (12, 16),
+        (16, 20),
+        (20, 24),
+        (24, 28),
+        (28, 32),
+        (32, 36),
+        (36, 40),
+        (40, 44),
+        (44, 84),
         (84, 88),
         (88, 92),
         (92, 96),
@@ -137,11 +153,57 @@ def test_rollback_depth_can_find_first_success_at_ten_without_global_rebuild() -
         (116, 120),
         (120, 124),
     ]
+    assert _pair_indexes(new_pairs[: len(old_pairs)]) == _pair_indexes(old_pairs)
+
+    fallback_start, fallback_end = new_pairs[len(old_pairs)]
+    metadata = fallback_end.attrs["bi_metadata"]
+    assert int(fallback_start["center_index"]) == 44
+    assert int(fallback_end["center_index"]) == 84
+    assert metadata["is_temporary"] is True
+    assert metadata["is_fallback_bi"] is True
+    assert metadata["color"] == "yellow"
+    assert metadata["fallback_reason"] == "affected_confirmed_bi_count >= 3"
 
     for position, (start, end) in enumerate(new_pairs):
+        if end.attrs.get("bi_metadata", {}).get("is_temporary"):
+            continue
         assert start["type"] != end["type"]
         assert abs(int(end["center_index"]) - int(start["center_index"])) >= 4
         assert validate_bi_extreme(bars, start, end)
         if position > 0:
             previous_end = new_pairs[position - 1][1]
             assert int(previous_end["center_index"]) == int(start["center_index"])
+
+
+def test_yellow_fallback_bi_is_fixed_and_normal_bis_continue_after_it() -> None:
+    bars, fractals, old_pairs = _build_depth_fixture()
+
+    _, bis = build_bis_incremental(
+        bars,
+        fractals,
+        max_rollback=15,
+        stuck_candidate_threshold=2,
+    )
+
+    assert bis.attrs["fallback_bi_count"] == 1
+    assert bis.attrs["fallback_affected_confirmed_bi_count"] == 10
+    assert bis.iloc[: len(old_pairs)][["start_center_index", "end_center_index"]].values.tolist() == [
+        [start, end] for start, end in _pair_indexes(old_pairs)
+    ]
+
+    fallback_position = len(old_pairs)
+    fallback_bi = bis.iloc[fallback_position]
+    assert fallback_bi["start_center_index"] == 44
+    assert fallback_bi["end_center_index"] == 84
+    assert bool(fallback_bi["is_temporary"]) is True
+    assert bool(fallback_bi["is_fallback_bi"]) is True
+    assert fallback_bi["color"] == "yellow"
+    assert fallback_bi["fallback_reason"] == "affected_confirmed_bi_count >= 3"
+    assert fallback_bi["affected_confirmed_bi_count"] == 10
+
+    normal_after_yellow = bis.iloc[fallback_position + 1 :]
+    assert not normal_after_yellow.empty
+    assert normal_after_yellow["is_temporary"].eq(False).all()
+    assert normal_after_yellow["is_fallback_bi"].eq(False).all()
+    assert normal_after_yellow[["start_center_index", "end_center_index"]].values.tolist()[0] == [84, 88]
+    assert {"up", "down"}.issubset(set(normal_after_yellow["direction"]))

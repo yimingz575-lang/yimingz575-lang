@@ -1,33 +1,102 @@
 # DEV_LOG.md
 
-## 2026-05-13 黄色临时笔 fallback 规则
+## 2026-05-14 笔中枢矩形边界修正
 
-本次没有修改包含关系处理、分型识别、标准笔硬条件、标准笔极值校验、标准笔连续性规则，也没有修改 K 线、均线、工具栏等显示功能。
+本次只修改笔中枢识别字段和中枢矩形绘制边界，没有修改 K 线包含关系、分型、画笔、MACD、均线、数据读取、hover 提示或图表交互逻辑。
 
 修改文件：
-- `src/chan/bi.py`
+- `src/chan/bi_zhongshu.py`
 - `src/ui/chart.py`
-- `tests/test_bi_fallback.py`
+- `tests/test_bi_zhongshu.py`
 - `tests/test_chart_bi_mapping.py`
 - `DEV_LOG.md`
 
-本次新增：
-- 新增工程化兜底层：当现有标准尾部回溯方案已经找到可推进结果，但 `accepted_rollback_count >= 3`，即生成新笔需要改写 3 根及以上已确认历史笔时，不应用该破坏性回溯结果。
-- 新增 `count_affected_confirmed_bis()`、`should_use_fallback_bi()`、`build_temporary_fallback_bi()`、`append_fallback_bi_without_rewriting_history()`、`apply_rollback_or_fallback_bi()`。
-- 标准笔记录新增兼容字段：`is_temporary=False`、`is_fallback_bi=False`、`fallback_reason=None`、`color=None`、`affected_confirmed_bi_count=0`、`fallback_level=None`。
-- 黄色临时笔记录使用：`is_temporary=True`、`is_fallback_bi=True`、`color="yellow"`、`fallback_reason="affected_confirmed_bi_count >= 3"`。
-- 黄色临时笔只追加在当前标准历史笔之后，不删除、不替换、不重画、不移动既有标准笔端点；严格连续性和端点极值诊断仍只针对标准笔，临时笔不混入标准缠论规则判断。
-- 临时笔生成仍沿用本项目强制数据流中的 `standard_bars + candidate_fractals`，没有直接使用 raw_bars 识别分型或生成笔。
-- Plotly 画笔颜色改为：标准向上笔红色、标准向下笔绿色、临时 fallback 笔黄色；hover 中显示“临时笔 / fallback bi”和触发原因。
-
-新增测试：
-- `tests/test_bi_fallback.py`：覆盖 `affected_confirmed_bi_count < 3` 时仍使用标准回溯结果；`>= 3` 时保留历史标准笔并追加黄色临时笔；标准笔字段默认为非临时。
-- `tests/test_chart_bi_mapping.py`：覆盖临时 fallback 笔前端绘制为黄色并在 hover 数据中带触发原因。
+本次调整：
+- `build_bi_zhongshu()` 输出 `start_x` / `end_x`，与 `start_dt` / `end_dt` 同步来自中枢真实参与笔。
+- 旧中枢延伸只在后续笔仍与核心区间 `[zd, zg]` 重叠时更新 `end_bi_index`、`end_dt`、`end_x`；第一次脱离的 `breakout_bi` 只记录为连接笔，不进入旧中枢边界。
+- 新中枢仍从 `breakout_bi` 后面的 `retrace_bi` 开始尝试，`start_dt` / `start_x` 来自 `retrace_bi`，不使用 `breakout_bi` 的起止时间或坐标。
+- 图表绘制“笔中枢”矩形时优先使用中枢记录中的 `start_x` / `end_x` 与 `zd` / `zg`，确保矩形横向范围只覆盖中枢参与笔；因当前图表 x 轴使用连续交易日序号，`start_x` / `end_x` 是 `start_dt` / `end_dt` 对应的图表坐标。
 
 验证：
-- `.\.venv\Scripts\python.exe -m pytest tests\test_bi_fallback.py`：`3 passed`
-- `.\.venv\Scripts\python.exe -m pytest tests\test_chart_bi_mapping.py`：`12 passed`
-- `.\.venv\Scripts\python.exe -m pytest`：`97 passed`
+- `.\.venv\Scripts\python.exe -m pytest tests/test_bi_zhongshu.py tests/test_chart_bi_mapping.py`：`23 passed`
+- `.\.venv\Scripts\python.exe -m py_compile src\chan\bi_zhongshu.py src\ui\chart.py`：通过
+
+## 2026-05-14 笔中枢连接笔规则
+
+本次只修改笔中枢识别逻辑和对应测试，没有修改 K 线包含关系、分型、画笔、MACD、均线、数据读取或图表交互代码。
+
+修改文件：
+- `src/chan/bi_zhongshu.py`
+- `tests/test_bi_zhongshu.py`
+- `DEV_LOG.md`
+
+本次调整：
+- 在 `build_bi_zhongshu()` 中新增相邻中枢之间的连接笔规则：当前中枢第一次完全脱离核心区间 `[zd, zg]` 的笔记为 `breakout_bi_index`，它只作为连接笔，不允许作为新中枢第一笔。
+- 新中枢最早从 `breakout_bi_index + 1` 开始尝试；紧接连接笔的 `retrace_bi` 若方向与连接笔相反、且未重新进入旧中枢核心区间，则允许作为新中枢候选第一笔。
+- 如果 `retrace_bi` 不满足条件，继续向后扫描，不回头修改旧中枢；后续新中枢只按自身三笔重叠规则判断，不增加新旧中枢之间的价格重叠或分离约束。
+- 中枢记录新增 `breakout_bi_index` 与 `breakout_direction` 字段，便于自查相邻中枢之间的连接笔。
+
+验证：
+- `.\.venv\Scripts\python.exe -m pytest tests/test_bi_zhongshu.py`：`7 passed`
+- `.\.venv\Scripts\python.exe -m py_compile src\chan\bi_zhongshu.py`：通过
+
+## 2026-05-14 笔中枢生成与显示
+
+本次没有修改 K 线包含关系、分型、画笔、线段识别、MACD、均线或数据读取逻辑；没有修改 `src/chan/inclusion.py`、`src/chan/fractal.py`、`src/chan/bi.py`。
+
+修改文件：
+- `src/chan/bi_zhongshu.py`
+- `src/ui/chart.py`
+- `tests/test_bi_zhongshu.py`
+- `tests/test_chart_bi_mapping.py`
+- `DEV_LOG.md`
+
+本次调整：
+- 新增 `build_bi_zhongshu()`，直接基于 `confirmed_bis` / 映射后的已确认笔序列生成一个级别的笔中枢，不使用线段作为输入。
+- 笔中枢使用连续三笔为基础，要求方向交替、第一笔和第三笔方向相同，并按 `max(low)` / `min(high)` 计算重叠区间；形成后按后续笔是否与核心区间 `[zd, zg]` 重叠进行延伸。
+- `src/ui/chart.py` 在勾选“显示中枢”时调用 `build_bi_zhongshu(mapped_bis)`，并以黄色半透明虚线矩形绘制“笔中枢”；中枢 trace 关闭 hover，不影响 K 线五项 tooltip。
+- “显示线段”仍可保留在工具栏，但图表层不再添加线段 placeholder trace；当前中枢也不再经过线段来源。
+
+验证：
+- `.\.venv\Scripts\python.exe -m pytest tests/test_bi_zhongshu.py tests/test_chart_bi_mapping.py`：`17 passed`
+- `.\.venv\Scripts\python.exe -m py_compile src\chan\bi_zhongshu.py src\ui\chart.py`：通过
+- 全量 `pytest` 在收集阶段被既有 `tests/test_bi_fallback.py` 阻塞：该测试导入 `src.chan.bi.apply_rollback_or_fallback_bi`，但当前 `src/chan/bi.py` 未暴露该名称；本次未修改 `src/chan/bi.py`。
+
+## 2026-05-14 竖向定位线贯穿主副图
+
+本次只修改 Dash / Plotly 图表交互显示层，没有修改数据源、包含关系、分型、笔、线段、中枢、MACD 或任何缠论计算逻辑。
+
+修改文件：
+- `src/ui/chart.py`
+- `src/ui/app.py`
+- `DEV_LOG.md`
+
+本次调整：
+- 关闭 Plotly 内置 x 轴 spike 显示，避免在主图和 MACD 副图交界处出现类似 `815` 的 x 坐标数值框。
+- 保留 K 线自身 hover，继续只显示时间、开盘价、收盘价、最高价、最低价。
+- 新增图表 hover 事件驱动的竖向 cursor line shape：`xref="x"`、`yref="paper"`、`y0=0`、`y1=1`，不带 annotation 或文字 label，用于贯穿主图 K 线区和 MACD 副图区。
+
+验证：
+- 通过脚本创建图表并检查 layout：`hovermode=closest`、`xaxis.showspikes=False`、`xaxis2.showspikes=False`，竖向线 shape 使用 `yref="paper"` 且 `y0=0`、`y1=1`。
+- Dash app 可创建，当前回调数量为 3。
+
+## 2026-05-14 K 线 hover 提示精简
+
+本次只修改 Dash / Plotly 图表显示层的 K 线 Candlestick hover 提示，没有修改数据源、包含关系、分型、笔、线段、中枢或任何缠论计算逻辑。
+
+修改文件：
+- `src/ui/chart.py`
+- `DEV_LOG.md`
+
+本次调整：
+- 将 `create_kline_figure()` 中 Candlestick trace 的 `customdata` 收窄为 `date_label`。
+- 将 Candlestick trace 的 `hovertemplate` 精简为仅显示：时间、开盘价、收盘价、最高价、最低价。
+- 将图表 `hovermode` 从统一 X 轴悬停改为当前对象悬停，避免 tooltip 额外带出 X 轴标题或其他 trace 信息。
+- 移除 K 线 hover 中的成交量、MACD、DIF、DEA、MA5/MA10/MA20 等显示内容。
+- K 线颜色、均线 trace、MACD trace、工具栏选项、缠论分析和绘图映射逻辑均未修改。
+
+验证：
+- 通过脚本创建 `create_kline_figure()` 并检查 Candlestick trace，确认 hovertemplate 只包含上述 5 项，customdata 只包含日期标签。
 
 ## 2026-05-13 视觉显示层样式与工具栏调整
 

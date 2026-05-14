@@ -224,6 +224,7 @@ def test_rollback_one_bi_rebuilds_later_valid_tail() -> None:
     assert stats["rollback_trigger_count"] == 1
     assert stats["rollback_success_count"] == 1
     assert stats["accepted_rollback_count"] == 1
+    assert stats["fallback_bi_count"] == 0
     assert records[-1]["accepted"] is True
     assert _pair_indexes(new_pairs) == [
         (0, 4),
@@ -245,6 +246,7 @@ def test_rollback_two_bis_when_one_is_not_enough() -> None:
 
     assert stats["rollback_success_count"] == 1
     assert stats["accepted_rollback_count"] == 2
+    assert stats["fallback_bi_count"] == 0
     assert [record["rollback_count"] for record in records] == [1, 2]
     assert records[0]["accepted"] is False
     assert records[1]["accepted"] is True

@@ -156,21 +156,22 @@ def test_bi_line_color_uses_direction_and_price_fallback(monkeypatch) -> None:
     ]
 
 
-def test_temporary_fallback_bi_is_drawn_yellow_with_hover_reason(monkeypatch) -> None:
+def test_temporary_fallback_bi_is_drawn_yellow_without_hover(monkeypatch) -> None:
     def fake_marks(_: pd.DataFrame) -> dict[str, object]:
-        marks = _fake_marks({20: 101, 30: 102}, [])
-        fallback_bi = _bi_record(20, 30, direction="up", start_price=10.0, end_price=15.0)
-        fallback_bi.update(
+        marks = _fake_marks(
+            {20: 101, 30: 102},
+            [],
+        )
+        fallback = _bi_record(20, 30, direction="up", start_price=10.0, end_price=18.0)
+        fallback.update(
             {
                 "is_temporary": True,
                 "is_fallback_bi": True,
-                "fallback_reason": "affected_confirmed_bi_count >= 3",
                 "color": "yellow",
-                "affected_confirmed_bi_count": 3,
-                "fallback_level": 1,
+                "fallback_reason": "affected_confirmed_bi_count >= 3",
             }
         )
-        marks["confirmed_bis"] = pd.DataFrame([fallback_bi])
+        marks["confirmed_bis"] = pd.DataFrame([fallback])
         return marks
 
     monkeypatch.setattr(chart, "analyze_chan_marks", fake_marks)
@@ -184,8 +185,10 @@ def test_temporary_fallback_bi_is_drawn_yellow_with_hover_reason(monkeypatch) ->
     trace = _bi_traces(fig)[0]
     assert trace.line.color == "yellow"
     assert trace.marker.color == "yellow"
-    assert trace.customdata[0][0] == "临时笔 / fallback bi"
+    assert trace.customdata[0][6] == "临时笔 / fallback bi"
     assert trace.customdata[0][7] == "affected_confirmed_bi_count >= 3"
+    assert trace.hoverinfo == "skip"
+    assert trace.hovertemplate is None
 
 
 def test_candles_and_bis_use_same_chart_x_range(monkeypatch) -> None:
@@ -281,6 +284,91 @@ def test_demo_and_real_chart_use_analyze_chan_marks_confirmed_bis(monkeypatch) -
 
     assert len(calls) == 2
     assert _make_cache_key("600497", "daily").startswith(ANALYSIS_VERSION)
+
+
+def test_zone_option_draws_bi_zhongshu_from_confirmed_bis(monkeypatch) -> None:
+    def fake_marks(_: pd.DataFrame) -> dict[str, object]:
+        marks = _fake_marks(
+            {20: 101, 30: 102, 40: 103, 50: 104},
+            [],
+        )
+        marks["confirmed_bis"] = pd.DataFrame(
+            [
+                _bi_record(20, 30, direction="up", start_price=10.0, end_price=20.0),
+                _bi_record(30, 40, direction="down", start_price=18.0, end_price=12.0),
+                _bi_record(40, 50, direction="up", start_price=14.0, end_price=22.0),
+            ]
+        )
+        return marks
+
+    monkeypatch.setattr(chart, "analyze_chan_marks", fake_marks)
+
+    fig = chart.create_kline_figure(
+        _make_raw_df(raw_start=100, rows=10),
+        display_options=["zone"],
+        visible_count=None,
+    )
+
+    zhongshu_traces = [trace for trace in fig.data if trace.name == "笔中枢"]
+    assert len(zhongshu_traces) == 1
+    trace = zhongshu_traces[0]
+    assert list(trace.x) == [1.0, 4.0, 4.0, 1.0, 1.0]
+    assert list(trace.y) == [14.0, 14.0, 18.0, 18.0, 14.0]
+    assert trace.line.dash == "dot"
+    assert trace.hoverinfo == "skip"
+    assert trace.hovertemplate is None
+    assert not _bi_traces(fig)
+
+
+def test_bi_zhongshu_rectangles_do_not_include_breakout_bi(monkeypatch) -> None:
+    def fake_marks(_: pd.DataFrame) -> dict[str, object]:
+        marks = _fake_marks(
+            {virtual_index: 100 + virtual_index for virtual_index in range(1, 9)},
+            [],
+        )
+        marks["confirmed_bis"] = pd.DataFrame(
+            [
+                _bi_record(1, 2, direction="up", start_price=10.0, end_price=20.0),
+                _bi_record(2, 3, direction="down", start_price=18.0, end_price=12.0),
+                _bi_record(3, 4, direction="up", start_price=14.0, end_price=22.0),
+                _bi_record(4, 5, direction="down", start_price=28.0, end_price=24.0),
+                _bi_record(5, 6, direction="up", start_price=24.0, end_price=32.0),
+                _bi_record(6, 7, direction="down", start_price=29.0, end_price=25.0),
+                _bi_record(7, 8, direction="up", start_price=26.0, end_price=34.0),
+            ]
+        )
+        return marks
+
+    monkeypatch.setattr(chart, "analyze_chan_marks", fake_marks)
+
+    fig = chart.create_kline_figure(
+        _make_raw_df(raw_start=100, rows=12),
+        display_options=["zone"],
+        visible_count=None,
+    )
+
+    zhongshu_traces = [trace for trace in fig.data if trace.name == "笔中枢"]
+    assert len(zhongshu_traces) == 2
+    assert list(zhongshu_traces[0].x) == [1.0, 4.0, 4.0, 1.0, 1.0]
+    assert list(zhongshu_traces[1].x) == [5.0, 8.0, 8.0, 5.0, 5.0]
+
+
+def test_segment_option_does_not_add_segment_trace(monkeypatch) -> None:
+    monkeypatch.setattr(
+        chart,
+        "analyze_chan_marks",
+        lambda _: _fake_marks({20: 102, 30: 106}, [(20, 30)]),
+    )
+
+    fig = chart.create_kline_figure(
+        _make_raw_df(raw_start=100, rows=10),
+        display_options=["segment"],
+        visible_count=None,
+    )
+
+    trace_names = {trace.name for trace in fig.data}
+    assert "线段" not in trace_names
+    assert "线段(预留)" not in trace_names
 
 
 def test_yaxis_range_uses_display_chart_x_not_cached_raw_index() -> None:

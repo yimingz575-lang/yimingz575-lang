@@ -9,6 +9,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from src.chan.bi_zhongshu import build_bi_zhongshu
 from src.chan.engine import analyze_chan_marks
 from src.chan.inclusion import detect_inclusion_marks
 from src.indicators.macd import append_macd
@@ -34,6 +35,9 @@ UP_COLOR = "#ff2b2b"
 DOWN_COLOR = "#00d6a3"
 BI_UP_COLOR = "#ff3030"
 BI_DOWN_COLOR = "#33d17a"
+BI_TEMPORARY_COLOR = "yellow"
+BI_ZHONGSHU_LINE_COLOR = "rgba(255, 214, 0, 0.95)"
+BI_ZHONGSHU_FILL_COLOR = "rgba(255, 214, 0, 0.16)"
 CHART_DEBUG_DIR = Path("output")
 CHART_BI_MAPPING_DEBUG_PATH = CHART_DEBUG_DIR / "chart_bi_mapping_debug.csv"
 CHART_BI_COVERAGE_DEBUG_PATH = CHART_DEBUG_DIR / "chart_bi_coverage_debug.csv"
@@ -96,37 +100,15 @@ def create_kline_figure(
         specs=[[{"type": "candlestick"}], [{"type": "bar"}]],
     )
 
-    if performance_mode or not show_ma:
-        customdata = chart_df[["date_label", "volume", "dif", "dea", "macd"]]
-        hovertemplate = (
-            "日期/时间: %{customdata[0]}<br>"
-            "开盘价: %{open:.2f}<br>"
-            "最高价: %{high:.2f}<br>"
-            "最低价: %{low:.2f}<br>"
-            "收盘价: %{close:.2f}<br>"
-            "成交量: %{customdata[1]:,.0f}<br>"
-            "DIF: %{customdata[2]:.4f}<br>"
-            "DEA: %{customdata[3]:.4f}<br>"
-            "MACD: %{customdata[4]:.4f}"
-            "<extra></extra>"
-        )
-    else:
-        customdata = chart_df[["date_label", "volume", "ma5", "ma10", "ma20", "dif", "dea", "macd"]]
-        hovertemplate = (
-            "日期/时间: %{customdata[0]}<br>"
-            "开盘价: %{open:.2f}<br>"
-            "最高价: %{high:.2f}<br>"
-            "最低价: %{low:.2f}<br>"
-            "收盘价: %{close:.2f}<br>"
-            "成交量: %{customdata[1]:,.0f}<br>"
-            "MA5: %{customdata[2]:.2f}<br>"
-            "MA10: %{customdata[3]:.2f}<br>"
-            "MA20: %{customdata[4]:.2f}<br>"
-            "DIF: %{customdata[5]:.4f}<br>"
-            "DEA: %{customdata[6]:.4f}<br>"
-            "MACD: %{customdata[7]:.4f}"
-            "<extra></extra>"
-        )
+    customdata = chart_df[["date_label"]]
+    hovertemplate = (
+        "时间：%{customdata[0]}<br>"
+        "开盘价：%{open:.2f}<br>"
+        "收盘价：%{close:.2f}<br>"
+        "最高价：%{high:.2f}<br>"
+        "最低价：%{low:.2f}"
+        "<extra></extra>"
+    )
 
     fig.add_trace(
         go.Candlestick(
@@ -307,7 +289,7 @@ def _add_chan_placeholder_traces(
 ) -> None:
     selected_options = set(display_options or [])
     for option, config in CHAN_PLACEHOLDER_TRACES.items():
-        if option in {"fractal", "bi"}:
+        if option in {"fractal", "bi", "segment", "zone"}:
             continue
         if option not in selected_options:
             continue
@@ -358,13 +340,8 @@ def _add_inclusion_marker_trace(
                 "line": {"color": "#fff3a3", "width": 1},
             },
             customdata=marked[["date_label", "index", "inclusion_type", "reason"]],
-            hovertemplate=(
-                "日期: %{customdata[0]}<br>"
-                "index: %{customdata[1]}<br>"
-                "inclusion_type: %{customdata[2]}<br>"
-                "%{customdata[3]}"
-                "<extra>包含关系</extra>"
-            ),
+            hoverinfo="skip",
+            hovertemplate=None,
         ),
         row=1,
         col=1,
@@ -382,16 +359,19 @@ def _add_chan_algorithm_traces(
     trace_info: dict[str, object] = {
         "confirmed_bis_count": 0,
         "bi_trace_count": 0,
+        "bi_zhongshu_count": 0,
         "bi_segments": [],
     }
     selected_options = set(display_options or [])
     show_bi = "bi" in selected_options
+    show_bi_zhongshu = "zone" in selected_options
     candle_x_min = int(chart_df["chart_x"].min()) if not chart_df.empty else None
     candle_x_max = int(chart_df["chart_x"].max()) if not chart_df.empty else None
     print("[chart] symbol =", symbol)
     print("[chart] timeframe =", timeframe)
     print("[chart] show_bi =", show_bi)
-    if chart_df.empty or not ({"fractal", "bi"} & selected_options):
+    print("[chart] show_bi_zhongshu =", show_bi_zhongshu)
+    if chart_df.empty or not ({"fractal", "bi", "zone"} & selected_options):
         if show_bi:
             print("[chart] marks keys =", [])
             print("[chart] raw_bars_total =", 0)
@@ -438,6 +418,7 @@ def _add_chan_algorithm_traces(
     skipped_debug_count = _count_skipped_debug_rows(mapping_debug_df)
     trace_info["confirmed_bis_count"] = len(confirmed_bis)
     trace_info["bi_segments"] = _collect_bi_segments(mapped_bis)
+    trace_info["bi_zhongshu_count"] = 0
     plot_window_raw_index_min = int(chart_df["raw_index"].min()) if not chart_df.empty else None
     plot_window_raw_index_max = int(chart_df["raw_index"].max()) if not chart_df.empty else None
     print("[chart] raw_bars_total =", len(analysis_chart_df))
@@ -464,6 +445,12 @@ def _add_chan_algorithm_traces(
             raw_index_to_chart_x=raw_index_to_chart_x,
         )
         _add_fractal_marker_traces(fig, chart_df, fractals)
+    if show_bi_zhongshu:
+        bi_zhongshu = build_bi_zhongshu(mapped_bis)
+        trace_info["bi_zhongshu_count"] = len(bi_zhongshu)
+        bi_zhongshu_trace_count = _add_bi_zhongshu_traces(fig, mapped_bis, bi_zhongshu)
+        print("[chart] bi_zhongshu_count =", len(bi_zhongshu))
+        print("[chart] bi_zhongshu_trace_count =", bi_zhongshu_trace_count)
     if "bi" in selected_options:
         bi_trace_count = _add_bi_line_traces(fig, mapped_bis)
         trace_info["bi_trace_count"] = bi_trace_count
@@ -514,6 +501,58 @@ def _add_fractal_marker_traces(
         )
 
 
+def _add_bi_zhongshu_traces(
+    fig: go.Figure,
+    mapped_bis: pd.DataFrame,
+    bi_zhongshu: pd.DataFrame,
+) -> int:
+    if mapped_bis.empty or bi_zhongshu.empty:
+        return 0
+
+    trace_count = 0
+    for position, (_, zs) in enumerate(bi_zhongshu.iterrows()):
+        start_bi_index = _coerce_int(zs.get("start_bi_index"))
+        end_bi_index = _coerce_int(zs.get("end_bi_index"))
+        if start_bi_index is None or end_bi_index is None:
+            continue
+        if start_bi_index < 0 or end_bi_index >= len(mapped_bis):
+            continue
+
+        start_x = pd.to_numeric(zs.get("start_x"), errors="coerce")
+        end_x = pd.to_numeric(zs.get("end_x"), errors="coerce")
+        if pd.isna(start_x):
+            start_x = pd.to_numeric(mapped_bis.iloc[start_bi_index].get("start_x"), errors="coerce")
+        if pd.isna(end_x):
+            end_x = pd.to_numeric(mapped_bis.iloc[end_bi_index].get("end_x"), errors="coerce")
+        zd = pd.to_numeric(zs.get("zd"), errors="coerce")
+        zg = pd.to_numeric(zs.get("zg"), errors="coerce")
+        if pd.isna(start_x) or pd.isna(end_x) or pd.isna(zd) or pd.isna(zg):
+            continue
+
+        x0 = float(min(start_x, end_x))
+        x1 = float(max(start_x, end_x))
+        y0 = float(min(zd, zg))
+        y1 = float(max(zd, zg))
+        fig.add_trace(
+            go.Scatter(
+                x=[x0, x1, x1, x0, x0],
+                y=[y0, y0, y1, y1, y0],
+                mode="lines",
+                name="笔中枢",
+                showlegend=position == 0,
+                line={"color": BI_ZHONGSHU_LINE_COLOR, "width": 1.4, "dash": "dot"},
+                fill="toself",
+                fillcolor=BI_ZHONGSHU_FILL_COLOR,
+                hoverinfo="skip",
+                hovertemplate=None,
+            ),
+            row=1,
+            col=1,
+        )
+        trace_count += 1
+    return trace_count
+
+
 def _add_bi_line_traces(fig: go.Figure, bis: pd.DataFrame) -> int:
     if bis.empty:
         return 0
@@ -523,29 +562,29 @@ def _add_bi_line_traces(fig: go.Figure, bis: pd.DataFrame) -> int:
         direction = _resolve_bi_direction(bi)
         direction_label = _format_bi_direction_label(direction)
         line_color = _get_bi_line_color(direction, bi)
-        bi_kind_label = _format_bi_kind_label(bi)
-        fallback_reason = _format_bi_fallback_reason(bi)
+        bi_state_label = _format_bi_state_label(bi)
+        fallback_reason = _format_fallback_reason(bi)
         start_date = _format_hover_date(bi["start_date"])
         end_date = _format_hover_date(bi["end_date"])
         customdata = [
             [
-                bi_kind_label,
                 direction_label,
                 start_date,
                 end_date,
                 float(bi["start_price"]),
                 float(bi["end_price"]),
                 int(bi["kline_count"]),
+                bi_state_label,
                 fallback_reason,
             ],
             [
-                bi_kind_label,
                 direction_label,
                 start_date,
                 end_date,
                 float(bi["start_price"]),
                 float(bi["end_price"]),
                 int(bi["kline_count"]),
+                bi_state_label,
                 fallback_reason,
             ],
         ]
@@ -559,17 +598,8 @@ def _add_bi_line_traces(fig: go.Figure, bis: pd.DataFrame) -> int:
                 line={"color": line_color, "width": 2.2},
                 marker={"color": line_color, "size": 5},
                 customdata=customdata,
-                hovertemplate=(
-                    "笔类型: %{customdata[0]}<br>"
-                    "笔方向: %{customdata[1]}<br>"
-                    "起点日期: %{customdata[2]}<br>"
-                    "终点日期: %{customdata[3]}<br>"
-                    "起点价格: %{customdata[4]:.2f}<br>"
-                    "终点价格: %{customdata[5]:.2f}<br>"
-                    "K线数量: %{customdata[6]}<br>"
-                    "触发原因: %{customdata[7]}"
-                    "<extra></extra>"
-                ),
+                hoverinfo="skip",
+                hovertemplate=None,
             ),
             row=1,
             col=1,
@@ -596,32 +626,16 @@ def _resolve_bi_direction(bi: pd.Series) -> str:
 
 
 def _get_bi_line_color(direction: str, bi: pd.Series | None = None) -> str:
-    if bi is not None and _is_fallback_bi_record(bi):
-        color = _row_value(bi, "color")
-        return str(color) if color else "yellow"
+    if bi is not None and (_is_temporary_bi(bi) or _is_fallback_bi(bi)):
+        row_color = _row_value(bi, "color")
+        if isinstance(row_color, str) and row_color.strip():
+            return row_color
+        return BI_TEMPORARY_COLOR
     if direction == "up":
         return BI_UP_COLOR
     if direction == "down":
         return BI_DOWN_COLOR
     return "#f8f32b"
-
-
-def _is_fallback_bi_record(bi: pd.Series) -> bool:
-    value = _row_value(bi, "is_fallback_bi", False)
-    if isinstance(value, str):
-        return value.strip().lower() in {"true", "1", "yes"}
-    return bool(value)
-
-
-def _format_bi_kind_label(bi: pd.Series) -> str:
-    return "临时笔 / fallback bi" if _is_fallback_bi_record(bi) else "标准笔"
-
-
-def _format_bi_fallback_reason(bi: pd.Series) -> str:
-    if not _is_fallback_bi_record(bi):
-        return "-"
-    reason = _row_value(bi, "fallback_reason", "")
-    return str(reason) if reason else "-"
 
 
 def _format_bi_direction_label(direction: str) -> str:
@@ -630,6 +644,34 @@ def _format_bi_direction_label(direction: str) -> str:
     if direction == "down":
         return "下降笔"
     return "方向未知"
+
+
+def _format_bi_state_label(bi: pd.Series) -> str:
+    if _is_temporary_bi(bi) or _is_fallback_bi(bi):
+        return "临时笔 / fallback bi"
+    return "标准笔"
+
+
+def _format_fallback_reason(bi: pd.Series) -> str:
+    reason = _row_value(bi, "fallback_reason", "")
+    if isinstance(reason, str) and reason.strip():
+        return reason
+    return "-"
+
+
+def _is_temporary_bi(bi: pd.Series) -> bool:
+    return _row_bool(bi, "is_temporary")
+
+
+def _is_fallback_bi(bi: pd.Series) -> bool:
+    return _row_bool(bi, "is_fallback_bi")
+
+
+def _row_bool(row: pd.Series, key: str) -> bool:
+    value = _row_value(row, key, False)
+    if pd.isna(value):
+        return False
+    return _coerce_bool(value)
 
 
 def _collect_bi_segments(bis: pd.DataFrame) -> list[tuple[float, float]]:
@@ -1103,13 +1145,8 @@ def _add_single_fractal_trace(
                 "line": {"color": "#ffffff", "width": 1},
             },
             customdata=chart_marks[["date_label", "type_label", "price", "index"]],
-            hovertemplate=(
-                "日期: %{customdata[0]}<br>"
-                "分型类型: %{customdata[1]}<br>"
-                "价格: %{customdata[2]:.2f}<br>"
-                "原始K线index: %{customdata[3]}"
-                "<extra></extra>"
-            ),
+            hoverinfo="skip",
+            hovertemplate=None,
         ),
         row=1,
         col=1,
@@ -1161,7 +1198,7 @@ def _style_figure(
         plot_bgcolor=BACKGROUND_COLOR,
         font={"color": "#eeeeee", "family": "Microsoft YaHei, SimHei, Arial, sans-serif"},
         dragmode="pan",
-        hovermode="x unified",
+        hovermode="closest",
         hoverdistance=80,
         spikedistance=80,
         bargap=0,
@@ -1195,6 +1232,16 @@ def _style_figure(
         range=visible_x_range,
         rangeslider_visible=False,
     )
+    x_spike_settings = {
+        "showspikes": False,
+        "spikecolor": "rgba(255, 255, 255, 0.72)",
+        "spikethickness": 1,
+        "spikedash": "dot",
+        "spikemode": "across",
+        "spikesnap": "cursor",
+    }
+    fig.update_xaxes(**x_spike_settings, row=1, col=1)
+    fig.update_xaxes(**x_spike_settings, row=2, col=1)
     fig.update_yaxes(**grid_settings)
     fig.update_yaxes(title_text="价格", row=1, col=1)
     fig.update_yaxes(title_text="MACD", row=2, col=1)

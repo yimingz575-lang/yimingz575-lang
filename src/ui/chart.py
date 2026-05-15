@@ -518,12 +518,8 @@ def _add_bi_zhongshu_traces(
         if start_bi_index < 0 or end_bi_index >= len(mapped_bis):
             continue
 
-        start_x = pd.to_numeric(zs.get("start_x"), errors="coerce")
-        end_x = pd.to_numeric(zs.get("end_x"), errors="coerce")
-        if pd.isna(start_x):
-            start_x = pd.to_numeric(mapped_bis.iloc[start_bi_index].get("start_x"), errors="coerce")
-        if pd.isna(end_x):
-            end_x = pd.to_numeric(mapped_bis.iloc[end_bi_index].get("end_x"), errors="coerce")
+        start_x = pd.to_numeric(mapped_bis.iloc[start_bi_index].get("start_x"), errors="coerce")
+        end_x = pd.to_numeric(mapped_bis.iloc[end_bi_index].get("end_x"), errors="coerce")
         zd = pd.to_numeric(zs.get("zd"), errors="coerce")
         zg = pd.to_numeric(zs.get("zg"), errors="coerce")
         if pd.isna(start_x) or pd.isna(end_x) or pd.isna(zd) or pd.isna(zg):

@@ -450,6 +450,16 @@ bis
 segments / zhongshu / divergence / buy_sell_points
 ```
 
+## 2026-05-15 本地多股票多周期K线数据中心
+
+- 新增 `src/data/market_data_center.py`：动态 `config/watchlist.json` 股票池、`data/market/{symbol}/{period}.csv` 标准K线读写、旧 `data/real/{symbol}_{period}.csv` 兼容读取、周期默认 `max_bars`、下载增量合并日志、以及未来缠论缓存路径 `data/cache/{symbol}/{period}/chan_cache.json`。
+- 新增 `src/data/providers/base_provider.py` 与 `src/data/providers/akshare_provider.py`：AKShare 调用集中在 provider 层，统一输出 `datetime,open,high,low,close,volume,amount`，为后续通达信/东方财富/同花顺/自购数据源预留接口。
+- 新增 `scripts/update_market_data.py`：支持 `--symbol --period` 单周期更新与 `--all-periods` 全周期更新，失败时只返回提示并保留旧CSV。
+- 改造 `src/data_source/csv_loader.py`：图表刷新只读本地数据，新路径优先，旧路径兜底；不再因为图表加载自动联网下载。
+- 改造 `src/ui/app.py`：顶部工具栏改为动态股票下拉、股票代码/名称输入、周期选择、K线数量选择、添加股票、下载/更新当前周期、下载/更新全部周期、删除股票、刷新图表。股票下拉来自动态 watchlist，不写死固定股票池。
+- 本次未修改 `src/chan/inclusion.py`、`src/chan/fractal.py`、`src/chan/bi.py`、`src/chan/bi_zhongshu.py`、买卖点算法或任何缠论核心算法。
+- 新增 `tests/test_market_data_center.py` 覆盖 watchlist 自动创建、股票增删、标准CSV保存读取、旧路径兼容。
+
 规则要点：
 
 - 原始 K 线 `raw_bars` / `raw_df` 只用于主图显示、保留原始行情字段，以及通过 `inclusion_groups` 映射显示分析结果。

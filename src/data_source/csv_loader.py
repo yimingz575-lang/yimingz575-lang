@@ -6,12 +6,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.data_source.akshare_loader import download_a_share_history
+from src.data.market_data_center import (
+    MARKET_DATA_RELATIVE_DIR,
+    STANDARD_KLINE_COLUMNS,
+    get_kline_path,
+    load_kline,
+)
 
 CSV_COLUMNS = ["date", "open", "high", "low", "close", "volume"]
+EMPTY_COLUMNS = ["date", "datetime", "open", "high", "low", "close", "volume", "amount"]
 SAMPLE_DEMO_RELATIVE_PATH = Path("data") / "sample" / "sample_demo_daily.csv"
 REAL_DATA_RELATIVE_DIR = Path("data") / "real"
-SUPPORTED_REAL_PERIODS = {"daily", "weekly", "monthly"}
 
 
 @dataclass(frozen=True)
@@ -26,53 +31,39 @@ class KLineDataResult:
 
 def load_kline_data(
     project_root: str | Path,
-    stock_code: str | None = "DEMO",
+    stock_code: str | None = None,
     period: str = "daily",
+    max_bars: int | None = None,
 ) -> KLineDataResult:
-    """Load demo data or real A-share data, downloading daily/weekly/monthly if missing."""
+    """Load local K-line data without triggering network downloads."""
     root = Path(project_root)
-    clean_stock_code = (stock_code or "DEMO").strip().upper() or "DEMO"
+    clean_stock_code = (stock_code or "").strip().upper()
     clean_period = period or "daily"
 
     if clean_stock_code == "DEMO":
         return _load_demo_result(root)
 
-    if not (clean_stock_code.isdigit() and len(clean_stock_code) == 6):
+    if not clean_stock_code:
         return _make_empty_result(
             root=root,
-            stock_code=clean_stock_code,
+            stock_code="",
             period=clean_period,
-            source_kind="error",
-            source_label="代码格式错误",
-            message="请输入6位A股股票代码",
+            source_kind="missing",
+            source_label="未选择股票",
+            message="请先添加或选择股票，再下载/读取本地K线数据。",
         )
 
-    if clean_period not in SUPPORTED_REAL_PERIODS:
+    try:
+        df = load_kline(clean_stock_code, clean_period, max_bars=max_bars, project_root=root)
+    except FileNotFoundError as exc:
         return _make_empty_result(
             root=root,
             stock_code=clean_stock_code,
             period=clean_period,
             source_kind="missing",
-            source_label="分钟周期未接入",
-            message="分钟周期数据源尚未接入，当前阶段只支持日线、周线、月线。",
+            source_label="本地数据不存在",
+            message=str(exc),
         )
-
-    real_relative_path = REAL_DATA_RELATIVE_DIR / f"{clean_stock_code}_{clean_period}.csv"
-    real_path = root / real_relative_path
-    if real_path.exists():
-        df = load_csv(real_path)
-        real_path_text = real_relative_path.as_posix()
-        return KLineDataResult(
-            df=df,
-            source_kind="real",
-            source_label="真实行情数据",
-            display_stock_code=clean_stock_code,
-            message=f"当前数据来源：真实行情数据（{real_path_text}）",
-            csv_path=real_path,
-        )
-
-    try:
-        df = download_a_share_history(clean_stock_code, clean_period, real_path)
     except Exception as exc:
         error_message = str(exc) or exc.__class__.__name__
         return _make_empty_result(
@@ -80,18 +71,26 @@ def load_kline_data(
             stock_code=clean_stock_code,
             period=clean_period,
             source_kind="error",
-            source_label="真实行情下载失败",
-            message=f"真实行情下载失败：{error_message}",
+            source_label="本地数据读取失败",
+            message=f"本地K线数据读取失败：{error_message}",
         )
 
-    real_path_text = real_relative_path.as_posix()
+    csv_path = Path(df.attrs.get("csv_path", get_kline_path(clean_stock_code, clean_period, root)))
+    source_kind = str(df.attrs.get("source_kind", "real"))
+    source_label = "旧路径行情数据" if source_kind == "legacy" else "本地行情数据"
+    total_count = int(df.attrs.get("total_count", len(df)))
+    actual_count = int(df.attrs.get("actual_count", len(df)))
+    path_text = _relative_text(root, csv_path)
     return KLineDataResult(
         df=df,
-        source_kind="real",
-        source_label="真实行情数据",
+        source_kind="real" if source_kind in {"real", "legacy"} else source_kind,
+        source_label=source_label,
         display_stock_code=clean_stock_code,
-        message=f"当前数据来源：真实行情数据（{real_path_text}）",
-        csv_path=real_path,
+        message=(
+            f"当前数据来源：{source_label}（{path_text}）。"
+            f"本地总K线 {total_count} 根，实际分析 {actual_count} 根。"
+        ),
+        csv_path=csv_path,
     )
 
 
@@ -105,16 +104,8 @@ def load_demo_csv(project_root: str | Path) -> pd.DataFrame:
 
 
 def load_real_csv(project_root: str | Path, stock_code: str, period: str = "daily") -> pd.DataFrame:
-    """Load a real stock CSV from data/real/{stock_code}_{period}.csv."""
-    root = Path(project_root)
-    clean_stock_code = stock_code.strip().upper()
-    real_relative_path = REAL_DATA_RELATIVE_DIR / f"{clean_stock_code}_{period}.csv"
-    real_path = root / real_relative_path
-    if not real_path.exists():
-        raise FileNotFoundError(
-            f"没有找到真实行情CSV，请先下载或导入 {real_relative_path.as_posix()}"
-        )
-    return load_csv(real_path)
+    """Compatibility helper: load real stock CSV through the new local data center."""
+    return load_kline(stock_code, period, project_root=project_root)
 
 
 def load_or_create_sample_csv(csv_path: str | Path | None = None) -> pd.DataFrame:
@@ -128,23 +119,30 @@ def load_or_create_sample_csv(csv_path: str | Path | None = None) -> pd.DataFram
 
 
 def load_csv(csv_path: str | Path) -> pd.DataFrame:
-    """Read a K-line CSV and normalize its required columns."""
+    """Read a K-line CSV and normalize it for the chart/Chan pipeline."""
     path = Path(csv_path)
     df = pd.read_csv(path)
+    if "date" not in df.columns and "datetime" in df.columns:
+        df = df.rename(columns={"datetime": "date"})
 
     missing_columns = [column for column in CSV_COLUMNS if column not in df.columns]
     if missing_columns:
         missing = ", ".join(missing_columns)
         raise ValueError(f"CSV file {path} is missing required columns: {missing}")
 
-    df = df[CSV_COLUMNS].copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    result = df.copy()
+    result["date"] = pd.to_datetime(result["date"], errors="coerce")
     for column in ["open", "high", "low", "close", "volume"]:
-        df[column] = pd.to_numeric(df[column], errors="coerce")
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    if "amount" not in result.columns:
+        result["amount"] = 0
+    result["amount"] = pd.to_numeric(result["amount"], errors="coerce").fillna(0)
+    result["datetime"] = result["date"]
 
-    df = df.dropna(subset=["date", "open", "high", "low", "close"])
-    df = df.sort_values("date").reset_index(drop=True)
-    return df
+    result = result.dropna(subset=["date", "open", "high", "low", "close"])
+    result = result.sort_values("date")
+    result = result.drop_duplicates(subset=["date"], keep="last")
+    return result[EMPTY_COLUMNS].reset_index(drop=True)
 
 
 def create_sample_csv(csv_path: str | Path, rows: int = 260) -> Path:
@@ -177,7 +175,7 @@ def create_sample_csv(csv_path: str | Path, rows: int = 260) -> Path:
             "volume": volume,
         }
     )
-    df.to_csv(path, index=False, columns=CSV_COLUMNS)
+    df.to_csv(path, index=False, columns=CSV_COLUMNS, encoding="utf-8")
     return path
 
 
@@ -203,12 +201,20 @@ def _make_empty_result(
     source_label: str,
     message: str,
 ) -> KLineDataResult:
-    csv_path = root / REAL_DATA_RELATIVE_DIR / f"{stock_code}_{period}.csv"
+    clean_stock = stock_code or "未选择"
+    csv_path = root / MARKET_DATA_RELATIVE_DIR / clean_stock / f"{period}.csv"
     return KLineDataResult(
-        df=pd.DataFrame(columns=CSV_COLUMNS),
+        df=pd.DataFrame(columns=EMPTY_COLUMNS),
         source_kind=source_kind,
         source_label=source_label,
-        display_stock_code=stock_code,
+        display_stock_code=clean_stock,
         message=message,
         csv_path=csv_path,
     )
+
+
+def _relative_text(root: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return str(path)

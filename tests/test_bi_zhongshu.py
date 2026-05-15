@@ -49,6 +49,9 @@ def test_build_bi_zhongshu_from_three_overlapping_confirmed_bis() -> None:
     assert zhongshu["zg"] == 18.0
     assert zhongshu["high"] == 22.0
     assert zhongshu["low"] == 10.0
+    assert bool(zhongshu["is_initial_three_bi"])
+    assert not bool(zhongshu["is_extended"])
+    assert zhongshu["connector_bi_indices"] == []
 
 
 def test_bi_zhongshu_extends_until_next_bi_no_longer_overlaps_core_range() -> None:
@@ -72,8 +75,10 @@ def test_bi_zhongshu_extends_until_next_bi_no_longer_overlaps_core_range() -> No
     assert zhongshu["zg"] == 18.0
     assert zhongshu["high"] == 22.0
     assert zhongshu["low"] == 10.0
-    assert zhongshu["breakout_bi_index"] == 4
-    assert zhongshu["breakout_direction"] == "up"
+    assert zhongshu["breakout_bi_index"] is None
+    assert zhongshu["breakout_direction"] is None
+    assert bool(zhongshu["is_extended"])
+    assert zhongshu["connector_bi_indices"] == []
 
 
 def test_adjacent_zhongshu_requires_one_breakout_bi_between_them() -> None:
@@ -82,10 +87,10 @@ def test_adjacent_zhongshu_requires_one_breakout_bi_between_them() -> None:
             _bi("2024-01-01", "2024-01-02", 10.0, 20.0, "up"),
             _bi("2024-01-02", "2024-01-03", 18.0, 12.0, "down"),
             _bi("2024-01-03", "2024-01-04", 14.0, 22.0, "up"),
-            _bi("2024-01-04", "2024-01-05", 28.0, 24.0, "down"),
-            _bi("2024-01-05", "2024-01-06", 24.0, 32.0, "up"),
-            _bi("2024-01-06", "2024-01-07", 29.0, 25.0, "down"),
-            _bi("2024-01-07", "2024-01-08", 26.0, 34.0, "up"),
+            _bi("2024-01-04", "2024-01-05", 16.0, 24.0, "up"),
+            _bi("2024-01-05", "2024-01-06", 23.0, 19.0, "down"),
+            _bi("2024-01-06", "2024-01-07", 20.0, 26.0, "up"),
+            _bi("2024-01-07", "2024-01-08", 25.0, 21.0, "down"),
         ]
     )
 
@@ -97,23 +102,25 @@ def test_adjacent_zhongshu_requires_one_breakout_bi_between_them() -> None:
     assert old_zs["end_bi_index"] == 2
     assert old_zs["breakout_bi_index"] == 3
     assert old_zs["breakout_direction"] == "up"
+    assert old_zs["connector_bi_indices"] == [3]
     assert new_zs["start_bi_index"] == 4
     assert old_zs["end_dt"] == pd.Timestamp("2024-01-04")
     assert new_zs["start_dt"] == pd.Timestamp("2024-01-05")
     assert new_zs["start_bi_index"] >= old_zs["end_bi_index"] + 2
-    assert new_zs["zd"] == 26.0
-    assert new_zs["zg"] == 29.0
+    assert new_zs["zd"] == 21.0
+    assert new_zs["zg"] == 23.0
 
 
-def test_breakout_bi_cannot_start_new_zhongshu_even_if_three_bis_overlap() -> None:
+def test_breakout_and_failed_future_center_are_all_connectors() -> None:
     confirmed_bis = pd.DataFrame(
         [
             _bi("2024-01-01", "2024-01-02", 10.0, 20.0, "up"),
             _bi("2024-01-02", "2024-01-03", 18.0, 12.0, "down"),
             _bi("2024-01-03", "2024-01-04", 14.0, 22.0, "up"),
-            _bi("2024-01-04", "2024-01-05", 28.0, 24.0, "down"),
-            _bi("2024-01-05", "2024-01-06", 25.0, 32.0, "up"),
-            _bi("2024-01-06", "2024-01-07", 30.0, 26.0, "down"),
+            _bi("2024-01-04", "2024-01-05", 16.0, 24.0, "up"),
+            _bi("2024-01-05", "2024-01-06", 23.0, 19.0, "down"),
+            _bi("2024-01-06", "2024-01-07", 20.0, 23.0, "up"),
+            _bi("2024-01-07", "2024-01-08", 40.0, 35.0, "down"),
         ]
     )
 
@@ -121,27 +128,55 @@ def test_breakout_bi_cannot_start_new_zhongshu_even_if_three_bis_overlap() -> No
 
     assert len(result) == 1
     assert result.iloc[0]["breakout_bi_index"] == 3
+    assert result.iloc[0]["connector_bi_indices"] == [3, 4, 5, 6]
 
 
-def test_retrace_bi_that_reenters_old_core_is_not_used_as_new_start() -> None:
+def test_breakout_candidate_that_reenters_old_core_is_not_confirmed_and_can_extend() -> None:
     confirmed_bis = pd.DataFrame(
         [
             _bi("2024-01-01", "2024-01-02", 10.0, 20.0, "up"),
             _bi("2024-01-02", "2024-01-03", 18.0, 12.0, "down"),
             _bi("2024-01-03", "2024-01-04", 14.0, 22.0, "up"),
-            _bi("2024-01-04", "2024-01-05", 28.0, 24.0, "down"),
-            _bi("2024-01-05", "2024-01-06", 16.0, 26.0, "up"),
-            _bi("2024-01-06", "2024-01-07", 31.0, 25.0, "down"),
-            _bi("2024-01-07", "2024-01-08", 26.0, 34.0, "up"),
-            _bi("2024-01-08", "2024-01-09", 29.0, 27.0, "down"),
+            _bi("2024-01-04", "2024-01-05", 16.0, 24.0, "up"),
+            _bi("2024-01-05", "2024-01-06", 23.0, 17.0, "down"),
+            _bi("2024-01-06", "2024-01-07", 18.0, 22.0, "up"),
+            _bi("2024-01-07", "2024-01-08", 20.0, 16.0, "down"),
+        ]
+    )
+
+    result = build_bi_zhongshu(confirmed_bis)
+
+    assert len(result) == 1
+    assert result.iloc[0]["end_bi_index"] == 6
+    assert result.iloc[0]["breakout_bi_index"] is None
+    assert result.iloc[0]["connector_bi_indices"] == []
+
+
+def test_down_breakout_confirmation_starts_new_center_after_connector() -> None:
+    confirmed_bis = pd.DataFrame(
+        [
+            _bi("2024-01-01", "2024-01-02", 10.0, 20.0, "up"),
+            _bi("2024-01-02", "2024-01-03", 18.0, 12.0, "down"),
+            _bi("2024-01-03", "2024-01-04", 14.0, 22.0, "up"),
+            _bi("2024-01-04", "2024-01-05", 16.0, 10.0, "down"),
+            _bi("2024-01-05", "2024-01-06", 11.0, 13.0, "up"),
+            _bi("2024-01-06", "2024-01-07", 12.0, 8.0, "down"),
+            _bi("2024-01-07", "2024-01-08", 9.0, 13.0, "up"),
         ]
     )
 
     result = build_bi_zhongshu(confirmed_bis)
 
     assert len(result) == 2
-    assert result.iloc[0]["breakout_bi_index"] == 3
-    assert result.iloc[1]["start_bi_index"] == 5
+    old_zs = result.iloc[0]
+    new_zs = result.iloc[1]
+    assert old_zs["end_bi_index"] == 2
+    assert old_zs["breakout_bi_index"] == 3
+    assert old_zs["breakout_direction"] == "down"
+    assert old_zs["connector_bi_indices"] == [3]
+    assert new_zs["start_bi_index"] == 4
+    assert new_zs["zd"] == 11.0
+    assert new_zs["zg"] == 12.0
 
 
 def test_later_new_zhongshu_does_not_require_price_separation_from_old_zhongshu() -> None:
@@ -163,8 +198,8 @@ def test_later_new_zhongshu_does_not_require_price_separation_from_old_zhongshu(
     assert len(result) == 2
     old_zs = result.iloc[0]
     new_zs = result.iloc[1]
-    assert new_zs["start_bi_index"] == 5
-    assert new_zs["zd"] == 17.0
+    assert new_zs["start_bi_index"] == 4
+    assert new_zs["zd"] == 16.0
     assert new_zs["zg"] == 19.0
     assert new_zs["zd"] <= old_zs["zg"]
 
@@ -175,10 +210,10 @@ def test_zhongshu_boundaries_exclude_breakout_bi_and_start_from_retrace_bi() -> 
             _bi("2024-01-01", "2024-01-02", 10.0, 20.0, "up", 0, 1),
             _bi("2024-01-02", "2024-01-03", 18.0, 12.0, "down", 1, 2),
             _bi("2024-01-03", "2024-01-04", 14.0, 22.0, "up", 2, 3),
-            _bi("2024-01-04", "2024-01-05", 28.0, 24.0, "down", 3, 4),
-            _bi("2024-01-05", "2024-01-06", 24.0, 32.0, "up", 4, 5),
-            _bi("2024-01-06", "2024-01-07", 29.0, 25.0, "down", 5, 6),
-            _bi("2024-01-07", "2024-01-08", 26.0, 34.0, "up", 6, 7),
+            _bi("2024-01-04", "2024-01-05", 16.0, 24.0, "up", 3, 4),
+            _bi("2024-01-05", "2024-01-06", 23.0, 19.0, "down", 4, 5),
+            _bi("2024-01-06", "2024-01-07", 20.0, 26.0, "up", 5, 6),
+            _bi("2024-01-07", "2024-01-08", 25.0, 21.0, "down", 6, 7),
         ]
     )
 

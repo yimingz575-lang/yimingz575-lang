@@ -331,10 +331,10 @@ def test_bi_zhongshu_rectangles_do_not_include_breakout_bi(monkeypatch) -> None:
                 _bi_record(1, 2, direction="up", start_price=10.0, end_price=20.0),
                 _bi_record(2, 3, direction="down", start_price=18.0, end_price=12.0),
                 _bi_record(3, 4, direction="up", start_price=14.0, end_price=22.0),
-                _bi_record(4, 5, direction="down", start_price=28.0, end_price=24.0),
-                _bi_record(5, 6, direction="up", start_price=24.0, end_price=32.0),
-                _bi_record(6, 7, direction="down", start_price=29.0, end_price=25.0),
-                _bi_record(7, 8, direction="up", start_price=26.0, end_price=34.0),
+                _bi_record(4, 5, direction="up", start_price=16.0, end_price=24.0),
+                _bi_record(5, 6, direction="down", start_price=23.0, end_price=19.0),
+                _bi_record(6, 7, direction="up", start_price=20.0, end_price=26.0),
+                _bi_record(7, 8, direction="down", start_price=25.0, end_price=21.0),
             ]
         )
         return marks
@@ -351,6 +351,36 @@ def test_bi_zhongshu_rectangles_do_not_include_breakout_bi(monkeypatch) -> None:
     assert len(zhongshu_traces) == 2
     assert list(zhongshu_traces[0].x) == [1.0, 4.0, 4.0, 1.0, 1.0]
     assert list(zhongshu_traces[1].x) == [5.0, 8.0, 8.0, 5.0, 5.0]
+
+
+def test_bi_zhongshu_rectangle_uses_participating_bi_endpoints() -> None:
+    mapped_bis = pd.DataFrame(
+        [
+            {"start_x": 10, "end_x": 20},
+            {"start_x": 20, "end_x": 30},
+            {"start_x": 30, "end_x": 40},
+        ]
+    )
+    bi_zhongshu = pd.DataFrame(
+        [
+            {
+                "start_bi_index": 0,
+                "end_bi_index": 2,
+                "start_x": -100,
+                "end_x": 999,
+                "zd": 14.0,
+                "zg": 18.0,
+            }
+        ]
+    )
+    fig = chart.make_subplots(rows=1, cols=1)
+
+    trace_count = chart._add_bi_zhongshu_traces(fig, mapped_bis, bi_zhongshu)
+
+    zhongshu_traces = [trace for trace in fig.data if trace.name == "笔中枢"]
+    assert trace_count == 1
+    assert len(zhongshu_traces) == 1
+    assert list(zhongshu_traces[0].x) == [10.0, 40.0, 40.0, 10.0, 10.0]
 
 
 def test_segment_option_does_not_add_segment_trace(monkeypatch) -> None:

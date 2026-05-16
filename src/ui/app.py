@@ -200,15 +200,25 @@ def create_app(project_root: Path | None = None) -> Dash:
                 className=f"data-source-hint source-{initial_data.source_kind}",
                 children=_format_data_message(initial_data.message, DEFAULT_VISIBLE_COUNT_VALUE, initial_visible_count),
             ),
-            dcc.Graph(
-                id="kline-chart",
-                className="kline-chart",
-                figure=initial_figure,
-                clear_on_unhover=True,
-                config={
-                    "scrollZoom": True,
-                    "displayModeBar": True,
-                },
+            html.Div(
+                className="chart-shell",
+                children=[
+                    html.Div(
+                        id="mouse-info-panel",
+                        className="mouse-info-panel",
+                        children=["X: --", html.Br(), "Y: --"],
+                    ),
+                    dcc.Graph(
+                        id="kline-chart",
+                        className="kline-chart",
+                        figure=initial_figure,
+                        clear_on_unhover=True,
+                        config={
+                            "scrollZoom": True,
+                            "displayModeBar": True,
+                        },
+                    ),
+                ],
             ),
         ],
     )
@@ -708,7 +718,27 @@ def _index_string() -> str:
             .source-demo { color: #ffd400; }
             .source-missing { color: #ff6b6b; }
             .source-error { color: #ff6b6b; }
+            .chart-shell { position: relative; }
             .kline-chart { height: calc(100vh - 148px); min-height: 860px; }
+            .mouse-info-panel {
+                position: absolute;
+                top: 12px;
+                right: 16px;
+                z-index: 10;
+                min-width: 190px;
+                max-width: 280px;
+                padding: 8px 10px;
+                border: 1px solid rgba(255, 0, 0, 0.55);
+                border-radius: 4px;
+                background: rgba(0, 0, 0, 0.82);
+                color: #f4f4f4;
+                font-family: Consolas, "Microsoft YaHei", SimHei, monospace;
+                font-size: 12px;
+                line-height: 1.45;
+                pointer-events: none;
+                white-space: nowrap;
+                box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+            }
             @media (max-width: 900px) {
                 .top-toolbar { align-items: flex-start; gap: 10px 12px; }
                 .brand { width: 100%; }
@@ -726,6 +756,294 @@ def _index_string() -> str:
             {%scripts%}
             {%renderer%}
         </footer>
+        <script>
+            (function () {
+                const graphId = "kline-chart";
+                const panelId = "mouse-info-panel";
+                const emptyPanelHtml = "X: --<br>Y: --";
+
+                function getGraphDiv() {
+                    const container = document.getElementById(graphId);
+                    return container ? container.querySelector(".js-plotly-plot") : null;
+                }
+
+                function getPanel() {
+                    return document.getElementById(panelId);
+                }
+
+                function escapeHtml(value) {
+                    return String(value)
+                        .replace(/&/g, "&amp;")
+                        .replace(/</g, "&lt;")
+                        .replace(/>/g, "&gt;")
+                        .replace(/"/g, "&quot;")
+                        .replace(/'/g, "&#39;");
+                }
+
+                function formatNumber(value, digits) {
+                    const number = Number(value);
+                    if (!Number.isFinite(number)) {
+                        return "--";
+                    }
+                    return number.toLocaleString("zh-CN", {
+                        minimumFractionDigits: 0,
+                        maximumFractionDigits: digits,
+                    });
+                }
+
+                function normalizeDateLabel(label) {
+                    if (label === undefined || label === null || label === "") {
+                        return null;
+                    }
+                    const text = String(label);
+                    return text.endsWith(" 00:00") ? text.slice(0, 10) : text;
+                }
+
+                function formatDateValue(value) {
+                    const date = new Date(value);
+                    if (Number.isNaN(date.getTime())) {
+                        return String(value);
+                    }
+                    const pad = function (number) {
+                        return String(number).padStart(2, "0");
+                    };
+                    const yyyy = date.getFullYear();
+                    const mm = pad(date.getMonth() + 1);
+                    const dd = pad(date.getDate());
+                    const hh = pad(date.getHours());
+                    const mi = pad(date.getMinutes());
+                    return hh === "00" && mi === "00"
+                        ? `${yyyy}-${mm}-${dd}`
+                        : `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
+                }
+
+                function getCandlestickTrace(gd) {
+                    if (!gd || !Array.isArray(gd.data)) {
+                        return null;
+                    }
+                    return gd.data.find(function (trace) {
+                        return trace && trace.type === "candlestick";
+                    }) || null;
+                }
+
+                function readCustomDataCell(cell, index) {
+                    if (Array.isArray(cell)) {
+                        return cell[index];
+                    }
+                    return index === 0 ? cell : undefined;
+                }
+
+                function buildDateLookup(gd) {
+                    const trace = getCandlestickTrace(gd);
+                    const lookup = new Map();
+                    if (!trace || !Array.isArray(trace.x)) {
+                        return lookup;
+                    }
+                    trace.x.forEach(function (xValue, index) {
+                        const numericX = Number(xValue);
+                        const label = normalizeDateLabel(readCustomDataCell(trace.customdata && trace.customdata[index], 0));
+                        if (Number.isFinite(numericX) && label) {
+                            lookup.set(Math.round(numericX), label);
+                        }
+                    });
+                    return lookup;
+                }
+
+                function formatXValue(gd, xAxis, xValue) {
+                    if (xAxis && xAxis.type === "date") {
+                        return formatDateValue(xValue);
+                    }
+                    const numericX = Number(xValue);
+                    if (!Number.isFinite(numericX)) {
+                        return "--";
+                    }
+                    const dateLookup = buildDateLookup(gd);
+                    const nearestIndex = Math.round(numericX);
+                    const dateLabel = dateLookup.get(nearestIndex);
+                    const sequenceText = `#${formatNumber(numericX, 2)}`;
+                    return dateLabel ? `${dateLabel}  ${sequenceText}` : sequenceText;
+                }
+
+                function isInsideAxis(axis, pixel) {
+                    return axis
+                        && Number.isFinite(axis._offset)
+                        && Number.isFinite(axis._length)
+                        && pixel >= axis._offset
+                        && pixel <= axis._offset + axis._length;
+                }
+
+                function pixelToAxisValue(axis, pixel) {
+                    const axisPixel = pixel - axis._offset;
+                    if (typeof axis.p2l === "function") {
+                        return axis.p2l(axisPixel);
+                    }
+                    if (typeof axis.p2d === "function") {
+                        return axis.p2d(axisPixel);
+                    }
+                    const range = axis.range || [];
+                    const start = Number(range[0]);
+                    const end = Number(range[1]);
+                    if (!Number.isFinite(start) || !Number.isFinite(end) || !axis._length) {
+                        return null;
+                    }
+                    const ratio = axisPixel / axis._length;
+                    return axis._id && axis._id.charAt(0) === "y"
+                        ? end - ratio * (end - start)
+                        : start + ratio * (end - start);
+                }
+
+                function chooseYAxis(fullLayout, pixelY) {
+                    if (isInsideAxis(fullLayout.yaxis, pixelY)) {
+                        return fullLayout.yaxis;
+                    }
+                    if (isInsideAxis(fullLayout.yaxis2, pixelY)) {
+                        return fullLayout.yaxis2;
+                    }
+                    return null;
+                }
+
+                function getCursorData(gd, event) {
+                    const fullLayout = gd && gd._fullLayout;
+                    if (!fullLayout) {
+                        return null;
+                    }
+                    const rect = gd.getBoundingClientRect();
+                    const pixelX = event.clientX - rect.left;
+                    const pixelY = event.clientY - rect.top;
+                    const yAxis = chooseYAxis(fullLayout, pixelY);
+                    const xAxis = yAxis === fullLayout.yaxis2 && fullLayout.xaxis2 ? fullLayout.xaxis2 : fullLayout.xaxis;
+                    if (!isInsideAxis(xAxis, pixelX) || !yAxis) {
+                        return null;
+                    }
+                    const xValue = pixelToAxisValue(xAxis, pixelX);
+                    const yValue = pixelToAxisValue(yAxis, pixelY);
+                    if (xValue === null || yValue === null) {
+                        return null;
+                    }
+                    return {
+                        xValue: xValue,
+                        yValue: yValue,
+                        xText: formatXValue(gd, xAxis, xValue),
+                        yText: formatNumber(yValue, 2),
+                    };
+                }
+
+                function readCandlestickHover(gd, hoverData) {
+                    if (!hoverData || !Array.isArray(hoverData.points)) {
+                        return null;
+                    }
+                    const point = hoverData.points.find(function (candidate) {
+                        const trace = candidate && (candidate.fullData || candidate.data);
+                        return trace && trace.type === "candlestick";
+                    });
+                    if (!point) {
+                        return null;
+                    }
+                    const trace = point.data || getCandlestickTrace(gd);
+                    const index = Number.isInteger(point.pointNumber)
+                        ? point.pointNumber
+                        : Number.isInteger(point.pointIndex)
+                            ? point.pointIndex
+                            : -1;
+                    if (!trace || index < 0) {
+                        return null;
+                    }
+                    const customData = trace.customdata && trace.customdata[index];
+                    return {
+                        xText: normalizeDateLabel(readCustomDataCell(customData, 0)) || formatXValue(gd, gd._fullLayout.xaxis, point.x),
+                        open: trace.open && trace.open[index],
+                        high: trace.high && trace.high[index],
+                        low: trace.low && trace.low[index],
+                        close: trace.close && trace.close[index],
+                        volume: readCustomDataCell(customData, 1),
+                    };
+                }
+
+                function renderPanel(cursorData, candleData) {
+                    const panel = getPanel();
+                    if (!panel) {
+                        return;
+                    }
+                    if (!cursorData) {
+                        panel.innerHTML = emptyPanelHtml;
+                        return;
+                    }
+                    const lines = [
+                        `X: ${cursorData.xText}`,
+                        `Y: ${cursorData.yText}`,
+                    ];
+                    if (candleData) {
+                        lines[0] = `X: ${candleData.xText}`;
+                        lines.push(`Open: ${formatNumber(candleData.open, 2)}`);
+                        lines.push(`High: ${formatNumber(candleData.high, 2)}`);
+                        lines.push(`Low: ${formatNumber(candleData.low, 2)}`);
+                        lines.push(`Close: ${formatNumber(candleData.close, 2)}`);
+                        if (candleData.volume !== undefined && candleData.volume !== null && candleData.volume !== "") {
+                            lines.push(`Volume: ${formatNumber(candleData.volume, 2)}`);
+                        }
+                    }
+                    panel.innerHTML = lines.map(escapeHtml).join("<br>");
+                }
+
+                function bindMouseInfoPanel(gd) {
+                    if (!gd || gd.__chanMouseInfoPanelBound) {
+                        return;
+                    }
+                    gd.__chanMouseInfoPanelBound = true;
+                    const state = {
+                        cursorData: null,
+                        candleData: null,
+                        candleAt: 0,
+                    };
+
+                    // Plotly 原生 hover 只会在数据 trace 上触发，K 线 OHLC 信息继续交给 plotly_hover 处理。
+                    if (typeof gd.on === "function") {
+                        gd.on("plotly_hover", function (hoverData) {
+                            const candleData = readCandlestickHover(gd, hoverData);
+                            if (candleData) {
+                                state.candleData = candleData;
+                                state.candleAt = Date.now();
+                                renderPanel(state.cursorData, state.candleData);
+                            }
+                        });
+                        gd.on("plotly_unhover", function () {
+                            state.candleData = null;
+                            renderPanel(state.cursorData, null);
+                        });
+                    }
+
+                    // 为了让鼠标位于空白区域时也显示 X/Y，额外监听原生 mousemove 并做像素到坐标的换算。
+                    gd.addEventListener("mousemove", function (event) {
+                        state.cursorData = getCursorData(gd, event);
+                        if (!state.cursorData) {
+                            renderPanel(null, null);
+                            return;
+                        }
+                        if (state.candleData && Date.now() - state.candleAt > 250) {
+                            state.candleData = null;
+                        }
+                        // 普通 X/Y 坐标由 mousemove 负责；只有仍处于 K 线 hover 状态时才附带 OHLC。
+                        renderPanel(state.cursorData, state.candleData);
+                    });
+                    gd.addEventListener("mouseleave", function () {
+                        state.cursorData = null;
+                        state.candleData = null;
+                        renderPanel(null, null);
+                    });
+                }
+
+                function tryBindMouseInfoPanel() {
+                    const gd = getGraphDiv();
+                    if (gd) {
+                        bindMouseInfoPanel(gd);
+                    }
+                }
+
+                document.addEventListener("DOMContentLoaded", tryBindMouseInfoPanel);
+                window.addEventListener("load", tryBindMouseInfoPanel);
+                window.setInterval(tryBindMouseInfoPanel, 800);
+            })();
+        </script>
     </body>
 </html>
 """

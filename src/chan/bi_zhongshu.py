@@ -86,11 +86,13 @@ def build_bi_zhongshu(confirmed_bis: pd.DataFrame) -> pd.DataFrame:
             next_search_index = next_index
             break
 
+        bi_indices = list(range(start_bi_index, end_bi_index + 1))
         participating = normalized_bis.iloc[start_bi_index : end_bi_index + 1]
         record = {
             "center_id": center_id,
             "source": "bi",
             "type": "bi_zhongshu",
+            "bi_indices": bi_indices,
             "start_bi_index": start_bi_index,
             "end_bi_index": end_bi_index,
             "breakout_bi_index": breakout_bi_index,
@@ -280,6 +282,7 @@ def _empty_bi_zhongshu() -> pd.DataFrame:
             "center_id",
             "source",
             "type",
+            "bi_indices",
             "start_bi_index",
             "end_bi_index",
             "breakout_bi_index",

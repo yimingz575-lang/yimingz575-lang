@@ -45,6 +45,7 @@ def test_build_bi_zhongshu_from_three_overlapping_confirmed_bis() -> None:
     assert zhongshu["type"] == "bi_zhongshu"
     assert zhongshu["start_bi_index"] == 0
     assert zhongshu["end_bi_index"] == 2
+    assert zhongshu["bi_indices"] == [0, 1, 2]
     assert zhongshu["zd"] == 14.0
     assert zhongshu["zg"] == 18.0
     assert zhongshu["high"] == 22.0
@@ -70,6 +71,7 @@ def test_bi_zhongshu_extends_until_next_bi_no_longer_overlaps_core_range() -> No
     assert len(result) == 1
     zhongshu = result.iloc[0]
     assert zhongshu["end_bi_index"] == 3
+    assert zhongshu["bi_indices"] == [0, 1, 2, 3]
     assert zhongshu["end_dt"] == pd.Timestamp("2024-01-05")
     assert zhongshu["zd"] == 14.0
     assert zhongshu["zg"] == 18.0
@@ -100,10 +102,12 @@ def test_adjacent_zhongshu_requires_one_breakout_bi_between_them() -> None:
     old_zs = result.iloc[0]
     new_zs = result.iloc[1]
     assert old_zs["end_bi_index"] == 2
+    assert old_zs["bi_indices"] == [0, 1, 2]
     assert old_zs["breakout_bi_index"] == 3
     assert old_zs["breakout_direction"] == "up"
     assert old_zs["connector_bi_indices"] == [3]
     assert new_zs["start_bi_index"] == 4
+    assert new_zs["bi_indices"] == [4, 5, 6]
     assert old_zs["end_dt"] == pd.Timestamp("2024-01-04")
     assert new_zs["start_dt"] == pd.Timestamp("2024-01-05")
     assert new_zs["start_bi_index"] >= old_zs["end_bi_index"] + 2

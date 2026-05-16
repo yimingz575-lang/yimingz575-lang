@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from src.ui import chart
-from src.ui.app import ANALYSIS_VERSION, DEFAULT_DISPLAY_OPTIONS, DISPLAY_OPTIONS, _make_cache_key
+from src.ui.app import ANALYSIS_VERSION, DEFAULT_DISPLAY_OPTIONS, DISPLAY_OPTIONS, _index_string, _make_cache_key
 
 
 def _make_raw_df(raw_start: int, rows: int) -> pd.DataFrame:
@@ -102,6 +103,51 @@ def test_candlestick_uses_white_for_all_ohlc_colors() -> None:
     assert candle.increasing.fillcolor == "white"
     assert candle.decreasing.line.color == "white"
     assert candle.decreasing.fillcolor == "white"
+
+
+def test_chart_spike_lines_are_enabled_for_cursor_tracking() -> None:
+    fig = chart.create_kline_figure(
+        _make_raw_df(raw_start=0, rows=10),
+        display_options=[],
+        visible_count=None,
+    )
+
+    assert fig.layout.hovermode == "closest"
+    assert fig.layout.spikedistance == -1
+    assert fig.layout.xaxis.showspikes is True
+    assert fig.layout.xaxis.spikemode == "across"
+    assert fig.layout.xaxis.spikesnap == "cursor"
+    assert fig.layout.yaxis.showspikes is True
+    assert fig.layout.yaxis.spikemode == "across"
+    assert fig.layout.yaxis.spikesnap == "cursor"
+    assert fig.layout.xaxis2.showspikes is True
+    assert fig.layout.yaxis2.showspikes is True
+
+
+def test_candlestick_hover_keeps_ohlc_and_volume_data() -> None:
+    fig = chart.create_kline_figure(
+        _make_raw_df(raw_start=0, rows=3),
+        display_options=[],
+        visible_count=None,
+    )
+
+    candle = fig.data[0]
+    assert candle.customdata[0][0] == "2024-01-01 00:00"
+    assert candle.customdata[0][1] == 1000
+    assert "%{open:.2f}" in candle.hovertemplate
+    assert "%{high:.2f}" in candle.hovertemplate
+    assert "%{low:.2f}" in candle.hovertemplate
+    assert "%{close:.2f}" in candle.hovertemplate
+    assert "%{customdata[1]}" in candle.hovertemplate
+
+
+def test_dash_index_injects_mouse_info_panel_script() -> None:
+    index_html = _index_string()
+
+    assert "mouse-info-panel" in index_html
+    assert "mousemove" in index_html
+    assert "plotly_hover" in index_html
+    assert "Plotly 原生 hover 只会在数据 trace 上触发" in index_html
 
 
 def test_moving_averages_are_hidden_by_default_and_shown_by_option() -> None:
@@ -381,6 +427,108 @@ def test_bi_zhongshu_rectangle_uses_participating_bi_endpoints() -> None:
     assert trace_count == 1
     assert len(zhongshu_traces) == 1
     assert list(zhongshu_traces[0].x) == [10.0, 40.0, 40.0, 10.0, 10.0]
+
+
+def test_bi_zhongshu_rectangles_use_explicit_bi_indices_and_skip_connector(capsys) -> None:
+    mapped_bis = pd.DataFrame(
+        [{"start_x": index, "end_x": index + 1} for index in range(7)]
+    )
+    bi_zhongshu = pd.DataFrame(
+        [
+            {
+                "center_id": 0,
+                "bi_indices": [0, 1, 2],
+                "start_bi_index": 0,
+                "end_bi_index": 3,
+                "zd": 14.0,
+                "zg": 18.0,
+            },
+            {
+                "center_id": 1,
+                "bi_indices": [4, 5, 6],
+                "start_bi_index": 3,
+                "end_bi_index": 6,
+                "zd": 21.0,
+                "zg": 23.0,
+            },
+        ]
+    )
+    fig = chart.make_subplots(rows=1, cols=1)
+
+    trace_count = chart._add_bi_zhongshu_traces(fig, mapped_bis, bi_zhongshu)
+
+    assert trace_count == 2
+    assert list(fig.data[0].x) == [0.0, 3.0, 3.0, 0.0, 0.0]
+    assert list(fig.data[1].x) == [4.0, 7.0, 7.0, 4.0, 4.0]
+    output = capsys.readouterr().out
+    assert "zs_id=0" in output
+    assert "bi_indices=[0, 1, 2]" in output
+    assert "expected_x0=0.0" in output
+    assert "actual_x1=3.0" in output
+    assert "zs_id=1" in output
+    assert "bi_indices=[4, 5, 6]" in output
+    assert "WARNING" not in output
+
+
+def test_bi_zhongshu_rectangles_filter_second_center_without_connector(capsys) -> None:
+    mapped_bis = pd.DataFrame(
+        [{"start_x": index, "end_x": index + 1} for index in range(6)]
+    )
+    bi_zhongshu = pd.DataFrame(
+        [
+            {
+                "center_id": 0,
+                "bi_indices": [0, 1, 2],
+                "start_bi_index": 0,
+                "end_bi_index": 2,
+                "zd": 14.0,
+                "zg": 18.0,
+            },
+            {
+                "center_id": 1,
+                "bi_indices": [3, 4, 5],
+                "start_bi_index": 3,
+                "end_bi_index": 5,
+                "zd": 21.0,
+                "zg": 23.0,
+            },
+        ]
+    )
+    fig = chart.make_subplots(rows=1, cols=1)
+
+    trace_count = chart._add_bi_zhongshu_traces(fig, mapped_bis, bi_zhongshu)
+
+    assert trace_count == 1
+    assert list(fig.data[0].x) == [0.0, 3.0, 3.0, 0.0, 0.0]
+    output = capsys.readouterr().out
+    assert "两个中枢之间缺少至少一根连接笔，后一个中枢已从绘图结果中过滤" in output
+
+
+def test_filter_independent_zhongshu_filters_overlapping_second_center(capsys) -> None:
+    zs_list = [
+        {"center_id": 0, "bi_indices": [0, 1, 2], "zd": 14.0, "zg": 18.0},
+        {"center_id": 1, "bi_indices": [2, 3, 4], "zd": 16.0, "zg": 20.0},
+    ]
+
+    valid_zhongshu_list = chart.filter_independent_zhongshu_with_connector(zs_list)
+
+    assert len(valid_zhongshu_list) == 1
+    assert valid_zhongshu_list[0]["center_id"] == 0
+    output = capsys.readouterr().out
+    assert "两个中枢之间缺少至少一根连接笔，后一个中枢已从绘图结果中过滤" in output
+
+
+def test_bi_zhongshu_rect_boundary_assertion_prints_warning(capsys) -> None:
+    with pytest.raises(AssertionError):
+        chart._assert_bi_zhongshu_rect_boundary(
+            expected_x0=0.0,
+            expected_x1=3.0,
+            actual_x0=0.0,
+            actual_x1=4.0,
+        )
+
+    output = capsys.readouterr().out
+    assert "中枢矩形绘图边界与中枢 bi_indices 不一致" in output
 
 
 def test_segment_option_does_not_add_segment_trace(monkeypatch) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from collections.abc import Iterable
 import inspect
 import math
@@ -100,13 +101,14 @@ def create_kline_figure(
         specs=[[{"type": "candlestick"}], [{"type": "bar"}]],
     )
 
-    customdata = chart_df[["date_label"]]
+    customdata = chart_df[["date_label", "volume"]]
     hovertemplate = (
         "时间：%{customdata[0]}<br>"
         "开盘价：%{open:.2f}<br>"
         "收盘价：%{close:.2f}<br>"
         "最高价：%{high:.2f}<br>"
         "最低价：%{low:.2f}"
+        "<br>成交量：%{customdata[1]}"
         "<extra></extra>"
     )
 
@@ -510,25 +512,49 @@ def _add_bi_zhongshu_traces(
         return 0
 
     trace_count = 0
-    for position, (_, zs) in enumerate(bi_zhongshu.iterrows()):
-        start_bi_index = _coerce_int(zs.get("start_bi_index"))
-        end_bi_index = _coerce_int(zs.get("end_bi_index"))
-        if start_bi_index is None or end_bi_index is None:
+    valid_zhongshu_list = filter_independent_zhongshu_with_connector(bi_zhongshu)
+    for position, zs in enumerate(valid_zhongshu_list):
+        bi_indices = _resolve_zhongshu_bi_indices(zs)
+        if not bi_indices:
             continue
-        if start_bi_index < 0 or end_bi_index >= len(mapped_bis):
+        min_bi_index = min(bi_indices)
+        max_bi_index = max(bi_indices)
+        if min_bi_index < 0 or max_bi_index >= len(mapped_bis):
+            print(
+                "[chart][bi_zhongshu_rect] WARNING: "
+                f"zs_id={_resolve_zs_id(zs, position)}, bi_indices={bi_indices} "
+                f"out of mapped_bis range 0..{len(mapped_bis) - 1}"
+            )
             continue
 
-        start_x = pd.to_numeric(mapped_bis.iloc[start_bi_index].get("start_x"), errors="coerce")
-        end_x = pd.to_numeric(mapped_bis.iloc[end_bi_index].get("end_x"), errors="coerce")
+        expected_x0 = pd.to_numeric(mapped_bis.iloc[min_bi_index].get("start_x"), errors="coerce")
+        expected_x1 = pd.to_numeric(mapped_bis.iloc[max_bi_index].get("end_x"), errors="coerce")
         zd = pd.to_numeric(zs.get("zd"), errors="coerce")
         zg = pd.to_numeric(zs.get("zg"), errors="coerce")
-        if pd.isna(start_x) or pd.isna(end_x) or pd.isna(zd) or pd.isna(zg):
+        if pd.isna(expected_x0) or pd.isna(expected_x1) or pd.isna(zd) or pd.isna(zg):
             continue
 
-        x0 = float(min(start_x, end_x))
-        x1 = float(max(start_x, end_x))
+        x0 = float(expected_x0)
+        x1 = float(expected_x1)
         y0 = float(min(zd, zg))
         y1 = float(max(zd, zg))
+        _print_bi_zhongshu_rect_debug(
+            zs=zs,
+            position=position,
+            bi_indices=bi_indices,
+            expected_x0=x0,
+            expected_x1=x1,
+            actual_x0=x0,
+            actual_x1=x1,
+            zd=float(zd),
+            zg=float(zg),
+        )
+        _assert_bi_zhongshu_rect_boundary(
+            expected_x0=x0,
+            expected_x1=x1,
+            actual_x0=x0,
+            actual_x1=x1,
+        )
         fig.add_trace(
             go.Scatter(
                 x=[x0, x1, x1, x0, x0],
@@ -547,6 +573,142 @@ def _add_bi_zhongshu_traces(
         )
         trace_count += 1
     return trace_count
+
+
+def filter_independent_zhongshu_with_connector(zs_list) -> list[pd.Series]:
+    rows = _coerce_zhongshu_rows(zs_list)
+    sortable_rows: list[tuple[int, int, pd.Series, list[int]]] = []
+    for original_position, zs in enumerate(rows):
+        bi_indices = _resolve_zhongshu_bi_indices(zs)
+        if not bi_indices:
+            continue
+        sortable_rows.append((min(bi_indices), original_position, zs, bi_indices))
+
+    sorted_rows = sorted(sortable_rows, key=lambda item: (item[0], item[1]))
+    valid_rows: list[tuple[pd.Series, list[int]]] = []
+    for _, _, zs, bi_indices in sorted_rows:
+        if not valid_rows:
+            valid_rows.append((zs, bi_indices))
+            continue
+
+        prev_bi_indices = valid_rows[-1][1]
+        prev_end = max(prev_bi_indices)
+        curr_start = min(bi_indices)
+        if curr_start >= prev_end + 2:
+            valid_rows.append((zs, bi_indices))
+            continue
+
+        print("WARNING：两个中枢之间缺少至少一根连接笔，后一个中枢已从绘图结果中过滤。")
+
+    return [zs for zs, _ in valid_rows]
+
+
+def _coerce_zhongshu_rows(zs_list) -> list[pd.Series]:
+    if zs_list is None:
+        return []
+    if isinstance(zs_list, pd.DataFrame):
+        return [zs for _, zs in zs_list.iterrows()]
+    if isinstance(zs_list, pd.Series):
+        return [zs_list]
+    if isinstance(zs_list, Iterable) and not isinstance(zs_list, (bytes, dict, str)):
+        rows: list[pd.Series] = []
+        for item in zs_list:
+            rows.append(item if isinstance(item, pd.Series) else pd.Series(item))
+        return rows
+    return [pd.Series(zs_list)]
+
+
+def _resolve_zhongshu_bi_indices(zs: pd.Series) -> list[int]:
+    if "bi_indices" in zs.index:
+        return _coerce_bi_indices(zs["bi_indices"])
+
+    start_bi_index = _coerce_int(zs.get("start_bi_index"))
+    end_bi_index = _coerce_int(zs.get("end_bi_index"))
+    if start_bi_index is None or end_bi_index is None:
+        return []
+
+    first, last = sorted([start_bi_index, end_bi_index])
+    return list(range(first, last + 1))
+
+
+def _coerce_bi_indices(value) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            value = ast.literal_eval(stripped)
+        except (SyntaxError, ValueError):
+            value = [item.strip() for item in stripped.split(",")]
+    else:
+        try:
+            if pd.isna(value):
+                return []
+        except (TypeError, ValueError):
+            pass
+
+    if isinstance(value, Iterable) and not isinstance(value, (bytes, dict, str)):
+        raw_indices = value
+    else:
+        raw_indices = [value]
+
+    indices: list[int] = []
+    for raw_index in raw_indices:
+        index = _coerce_int(raw_index)
+        if index is not None and index not in indices:
+            indices.append(index)
+    return indices
+
+
+def _resolve_zs_id(zs: pd.Series, position: int):
+    center_id = zs.get("center_id")
+    if center_id is None or pd.isna(center_id):
+        return position
+    return center_id
+
+
+def _print_bi_zhongshu_rect_debug(
+    *,
+    zs: pd.Series,
+    position: int,
+    bi_indices: list[int],
+    expected_x0: float,
+    expected_x1: float,
+    actual_x0: float,
+    actual_x1: float,
+    zd: float,
+    zg: float,
+) -> None:
+    print(
+        "[chart][bi_zhongshu_rect] "
+        f"zs_id={_resolve_zs_id(zs, position)}, "
+        f"zs.bi_indices={bi_indices}, "
+        f"zs.start_bi_index={zs.get('start_bi_index')}, "
+        f"zs.end_bi_index={zs.get('end_bi_index')}, "
+        f"expected_x0={expected_x0}, "
+        f"expected_x1={expected_x1}, "
+        f"actual_x0={actual_x0}, "
+        f"actual_x1={actual_x1}, "
+        f"ZD={zd}, "
+        f"ZG={zg}"
+    )
+
+
+def _assert_bi_zhongshu_rect_boundary(
+    *,
+    expected_x0: float,
+    expected_x1: float,
+    actual_x0: float,
+    actual_x1: float,
+) -> None:
+    try:
+        assert actual_x0 == expected_x0
+        assert actual_x1 == expected_x1
+    except AssertionError:
+        print("WARNING：中枢矩形绘图边界与中枢 bi_indices 不一致，可能多画或少画连接笔。")
+        raise
 
 
 def _add_bi_line_traces(fig: go.Figure, bis: pd.DataFrame) -> int:
@@ -1179,6 +1341,7 @@ def _style_figure(
         "spikethickness": 1,
         "spikedash": "dot",
         "spikemode": "across",
+        "spikesnap": "cursor",
     }
 
     fig.update_layout(
@@ -1196,7 +1359,7 @@ def _style_figure(
         dragmode="pan",
         hovermode="closest",
         hoverdistance=80,
-        spikedistance=80,
+        spikedistance=-1,
         bargap=0,
         legend={
             "orientation": "h",
@@ -1229,7 +1392,7 @@ def _style_figure(
         rangeslider_visible=False,
     )
     x_spike_settings = {
-        "showspikes": False,
+        "showspikes": True,
         "spikecolor": "rgba(255, 255, 255, 0.72)",
         "spikethickness": 1,
         "spikedash": "dot",
